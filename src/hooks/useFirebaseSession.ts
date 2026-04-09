@@ -14,10 +14,21 @@ function generateId(): string {
 // ──────────────────────────────────────────────
 // Matchmaking: find or create a team that needs this role
 // ──────────────────────────────────────────────
+function participantInfo(name: string) {
+  return {
+    name,
+    joinedAt: Date.now(),
+    userAgent: navigator.userAgent,
+    screenSize: `${window.innerWidth}x${window.innerHeight}`,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  };
+}
+
 async function findOrCreateTeam(
   taskId: string,
   role: Role,
-  name: string
+  name: string,
+  taskMeta: { category: string; difficulty: string },
 ): Promise<{ sessionId: string; isNew: boolean }> {
   const waitingRef = ref(db, `teambench/waiting/${taskId}`);
   const snapshot = await get(waitingRef);
@@ -37,17 +48,20 @@ async function findOrCreateTeam(
 
         // Add participant to the session
         const participantRef = ref(db, `teambench/sessions/${team.sessionId}/participants/${role}`);
-        await set(participantRef, { name, joinedAt: Date.now() });
+        await set(participantRef, participantInfo(name));
 
         // Check if all 3 roles are now filled
         const updatedSnap = await get(ref(db, `teambench/waiting/${taskId}/${waitId}/roles`));
         const roles = updatedSnap.val();
         if (roles.planner && roles.executor && roles.verifier) {
           // Team complete — remove from waiting, start session
+          const startNow = Date.now();
           await set(ref(db, `teambench/waiting/${taskId}/${waitId}`), null);
           await update(ref(db, `teambench/sessions/${team.sessionId}`), {
             phase: 'planning',
-            startTime: Date.now(),
+            status: 'active',
+            startTime: startNow,
+            startTimeISO: new Date(startNow).toISOString(),
           });
         }
 
@@ -58,18 +72,39 @@ async function findOrCreateTeam(
 
   // No matching team found — create a new one
   const sessionId = `${taskId}_${generateId()}`;
+  const now = Date.now();
 
-  // Create the session
+  // Create the session with rich metadata for clear labeling
   await set(ref(db, `teambench/sessions/${sessionId}`), {
+    // Identity
     sessionId,
     taskId,
+    // Task metadata (for filtering/grouping in DB without needing task config)
+    taskCategory: taskMeta?.category || '',
+    taskDifficulty: taskMeta?.difficulty || '',
+    // Experiment labeling
+    experimentRound: 1,     // increment for each experiment batch
+    experimentGroup: 'pilot', // 'pilot' | 'main' | 'followup'
+    // State
     phase: 'lobby',
+    status: 'waiting',       // 'waiting' | 'active' | 'completed' | 'abandoned'
+    // Timing
     startTime: null,
     endTime: null,
+    createdAt: now,
+    createdAtISO: new Date(now).toISOString(),
+    // Duration tracking (filled on completion)
+    durationSeconds: null,
+    planningDurationSeconds: null,
+    executionDurationSeconds: null,
+    verificationDurationSeconds: null,
+    // Participants
     participants: {
-      [role]: { name, joinedAt: Date.now() },
+      [role]: participantInfo(name),
     },
-    createdAt: Date.now(),
+    // Outcome (filled on completion)
+    verdict: null,            // 'pass' | 'fail' | null
+    remediationCount: 0,
   });
 
   // Add to waiting queue
@@ -173,7 +208,10 @@ export function useFirebaseSession(task: TaskConfig) {
       }
 
       // Find or create a team
-      const { sessionId: newSessionId, isNew } = await findOrCreateTeam(task.taskId, selectedRole, name);
+      const { sessionId: newSessionId, isNew } = await findOrCreateTeam(
+        task.taskId, selectedRole, name,
+        { category: task.category, difficulty: task.difficulty },
+      );
       setSessionId(newSessionId);
       setRole(selectedRole);
 
@@ -226,16 +264,40 @@ export function useFirebaseSession(task: TaskConfig) {
     addLog(sessionId, role, 'file_edit', { path, contentLength: content.length });
   }, [sessionId, role]);
 
-  // Change phase
+  // Change phase — tracks durations and status
   const setPhase = useCallback(async (newPhase: SessionState['phase']) => {
     if (!sessionId || !role) return;
+    const now = Date.now();
     const updates: Record<string, unknown> = { phase: newPhase };
+
+    // Record phase transition timestamp
+    updates[`phaseDurations/${phase}_to_${newPhase}`] = now;
+
     if (newPhase === 'completed') {
-      updates.endTime = Date.now();
+      updates.endTime = now;
+      updates.endTimeISO = new Date(now).toISOString();
+      updates.status = 'completed';
+      if (startTime) {
+        updates.durationSeconds = Math.round((now - startTime) / 1000);
+      }
+    } else if (newPhase === 'planning' || newPhase === 'execution' || newPhase === 'verification') {
+      updates.status = 'active';
     }
+
+    // Track verdict from verifier
+    if (role === 'verifier' && phase === 'verification') {
+      if (newPhase === 'execution') {
+        // Verifier sent back to executor = fail
+        updates.verdict = 'fail';
+        updates.remediationCount = (await get(ref(db, `teambench/sessions/${sessionId}/remediationCount`))).val() + 1 || 1;
+      } else if (newPhase === 'completed') {
+        updates.verdict = 'pass';
+      }
+    }
+
     await update(ref(db, `teambench/sessions/${sessionId}`), updates);
-    addLog(sessionId, role, 'phase_change', { from: phase, to: newPhase });
-  }, [sessionId, role, phase]);
+    addLog(sessionId, role, 'phase_change', { from: phase, to: newPhase, timestamp: now });
+  }, [sessionId, role, phase, startTime]);
 
   // Get visible messages for current role
   const getVisibleMessages = useCallback((): ChatMessage[] => {
@@ -265,12 +327,29 @@ export function useFirebaseSession(task: TaskConfig) {
     const logs = logsSnap.exists() ? Object.values(logsSnap.val()) : [];
 
     const exportData = {
+      // Session identity
       sessionId,
       taskId: task.taskId,
+      taskCategory: data.taskCategory || task.category,
+      taskDifficulty: data.taskDifficulty || task.difficulty,
+      experimentRound: data.experimentRound || 1,
+      experimentGroup: data.experimentGroup || 'pilot',
+      // Status
+      phase: data.phase,
+      status: data.status,
+      verdict: data.verdict,
+      remediationCount: data.remediationCount || 0,
+      // Timing
       startTime: data.startTime,
       endTime: data.endTime,
-      phase: data.phase,
+      durationSeconds: data.durationSeconds,
+      phaseDurations: data.phaseDurations || {},
+      createdAt: data.createdAt,
+      exportedAt: Date.now(),
+      exportedAtISO: new Date().toISOString(),
+      // Participants (with browser info)
       participants: data.participants,
+      // Data
       messages: messages,
       logs,
       finalFiles: files.map(f => ({ path: f.path, content: f.content })),
@@ -307,13 +386,16 @@ export function useFirebaseSession(task: TaskConfig) {
   };
 }
 
-// Helper: log an action to Firebase
+// Helper: log an action to Firebase with full context
 function addLog(sessionId: string, role: Role, action: string, detail: Record<string, unknown>) {
+  const now = Date.now();
   push(ref(db, `teambench/sessions/${sessionId}/logs`), {
     id: generateId(),
+    sessionId,
     role,
     action,
     detail,
-    timestamp: Date.now(),
+    timestamp: now,
+    timestampISO: new Date(now).toISOString(),
   });
 }
