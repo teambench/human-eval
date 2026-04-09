@@ -1,36 +1,25 @@
 import { useFirebaseSession } from './hooks/useFirebaseSession';
-import { SAMPLE_TASK } from './data/sampleTask';
 import { LobbyView } from './views/LobbyView';
 import { PlannerView } from './views/PlannerView';
 import { ExecutorView } from './views/ExecutorView';
 import { VerifierView } from './views/VerifierView';
+import { OracleView } from './views/OracleView';
 import { CompletedView } from './views/CompletedView';
 
 export default function App() {
   const {
-    sessionId,
-    role,
-    phase,
-    messages,
-    files,
-    participants,
-    startTime,
-    endTime,
-    joining,
-    waitingForTeam,
-    join,
-    sendMessage,
-    updateFile,
-    setPhase,
-    exportLogs,
-    addLog,
-  } = useFirebaseSession(SAMPLE_TASK);
+    task, sessionId, role, mode, phase,
+    messages, files, participants,
+    startTime, endTime,
+    joining, waitingForTeam,
+    join, sendMessage, updateFile, setPhase, exportLogs, addLog,
+  } = useFirebaseSession();
 
-  // Completed state
-  if (phase === 'completed' && sessionId) {
+  // Completed
+  if (phase === 'completed' && task && sessionId) {
     return (
       <CompletedView
-        taskId={SAMPLE_TASK.taskId}
+        taskId={task.taskId}
         startTime={startTime}
         endTime={endTime}
         onExportLogs={exportLogs}
@@ -38,34 +27,45 @@ export default function App() {
     );
   }
 
-  // Lobby / Waiting
-  if (!role || phase === 'lobby') {
+  // Lobby / Waiting / Task selection
+  if (!role || !task || phase === 'lobby') {
     return (
       <LobbyView
-        taskId={SAMPLE_TASK.taskId}
         onJoin={join}
         joining={joining}
         waitingForTeam={waitingForTeam}
+        waitingSessionId={sessionId}
         participants={participants}
       />
     );
   }
 
-  // Build session-like object for views
+  // Build session object for views
   const session = {
     sessionId: sessionId!,
-    taskConfig: SAMPLE_TASK,
+    taskConfig: task,
     participants: Object.entries(participants).map(([r, p]) => ({
       id: r, name: p.name, role: r as any, joinedAt: p.joinedAt,
     })),
-    messages,
-    files,
-    logs: [],
-    phase,
-    startTime,
-    endTime,
+    messages, files, logs: [],
+    phase, startTime, endTime,
+    mode,
   };
 
+  // Oracle view — single person, full access
+  if (role === 'oracle') {
+    return (
+      <OracleView
+        session={session}
+        files={files}
+        onUpdateFile={(path, content) => updateFile(path, content)}
+        onPhaseChange={setPhase}
+        onLog={addLog}
+      />
+    );
+  }
+
+  // Team views
   const onSend = (to: any, content: string) => sendMessage(to, content);
 
   switch (role) {

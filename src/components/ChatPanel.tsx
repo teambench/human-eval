@@ -12,12 +12,14 @@ const ROLE_COLORS: Record<Role, string> = {
   planner: '#6366f1',
   executor: '#f59e0b',
   verifier: '#10b981',
+  oracle: '#cba6f7',
 };
 
 const ROLE_LABELS: Record<Role, string> = {
   planner: 'Planner',
   executor: 'Executor',
   verifier: 'Verifier',
+  oracle: 'Oracle',
 };
 
 export function ChatPanel({ role, messages, onSend, disabled }: ChatPanelProps) {

@@ -1,4 +1,7 @@
-export type Role = 'planner' | 'executor' | 'verifier';
+export type Role = 'planner' | 'executor' | 'verifier' | 'oracle';
+
+// Team mode needs 3 people; oracle mode is solo
+export type SessionMode = 'team' | 'oracle';
 
 export interface Participant {
   id: string;
@@ -26,7 +29,7 @@ export interface ActionLog {
   id: string;
   participantId: string;
   role: Role;
-  action: string; // 'file_open' | 'file_edit' | 'chat_send' | 'command_run' | 'submit_plan' | 'submit_verdict'
+  action: string;
   detail: Record<string, unknown>;
   timestamp: number;
 }
@@ -51,6 +54,7 @@ export interface SessionState {
   phase: 'lobby' | 'planning' | 'execution' | 'verification' | 'completed';
   startTime: number | null;
   endTime: number | null;
+  mode: SessionMode;
 }
 
 export interface TerminalLine {
