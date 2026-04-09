@@ -24,6 +24,8 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - name: Inject Firebase API key
+        run: sed -i "s/__FIREBASE_API__/${{ secrets.FIREBASE_API }}/" src/firebase.ts
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:

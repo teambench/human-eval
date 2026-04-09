@@ -1,6 +1,4 @@
-import { useState } from 'react';
-import { Role } from './types';
-import { useSession } from './hooks/useSession';
+import { useFirebaseSession } from './hooks/useFirebaseSession';
 import { SAMPLE_TASK } from './data/sampleTask';
 import { LobbyView } from './views/LobbyView';
 import { PlannerView } from './views/PlannerView';
@@ -9,51 +7,66 @@ import { VerifierView } from './views/VerifierView';
 import { CompletedView } from './views/CompletedView';
 
 export default function App() {
-  const [role, setRole] = useState<Role | null>(null);
-  const [_name, setName] = useState('');
-
   const {
-    session,
+    sessionId,
+    role,
+    phase,
+    messages,
+    files,
+    participants,
+    startTime,
+    endTime,
+    joining,
+    waitingForTeam,
+    join,
     sendMessage,
     updateFile,
     setPhase,
-    getVisibleFiles,
-    getVisibleMessages,
-    addLog,
     exportLogs,
-  } = useSession(SAMPLE_TASK);
-
-  const handleJoin = (selectedRole: Role, participantName: string) => {
-    setRole(selectedRole);
-    setName(participantName);
-    addLog(selectedRole, 'join', { name: participantName });
-    if (session.phase === 'lobby') {
-      setPhase('planning');
-    }
-  };
+    addLog,
+  } = useFirebaseSession(SAMPLE_TASK);
 
   // Completed state
-  if (session.phase === 'completed') {
+  if (phase === 'completed' && sessionId) {
     return (
       <CompletedView
-        taskId={session.taskConfig.taskId}
-        startTime={session.startTime}
-        endTime={session.endTime}
+        taskId={SAMPLE_TASK.taskId}
+        startTime={startTime}
+        endTime={endTime}
         onExportLogs={exportLogs}
       />
     );
   }
 
-  // Lobby
-  if (!role) {
-    return <LobbyView taskId={SAMPLE_TASK.taskId} onJoin={handleJoin} />;
+  // Lobby / Waiting
+  if (!role || phase === 'lobby') {
+    return (
+      <LobbyView
+        taskId={SAMPLE_TASK.taskId}
+        onJoin={join}
+        joining={joining}
+        waitingForTeam={waitingForTeam}
+        participants={participants}
+      />
+    );
   }
 
-  // Role-specific views
-  const files = getVisibleFiles(role);
-  const messages = getVisibleMessages(role);
-  const onSend = (to: Role | 'all', content: string) => sendMessage(role, to, content);
-  const onLog = (action: string, detail?: Record<string, unknown>) => addLog(role, action, detail ?? {});
+  // Build session-like object for views
+  const session = {
+    sessionId: sessionId!,
+    taskConfig: SAMPLE_TASK,
+    participants: Object.entries(participants).map(([r, p]) => ({
+      id: r, name: p.name, role: r as any, joinedAt: p.joinedAt,
+    })),
+    messages,
+    files,
+    logs: [],
+    phase,
+    startTime,
+    endTime,
+  };
+
+  const onSend = (to: any, content: string) => sendMessage(to, content);
 
   switch (role) {
     case 'planner':
@@ -64,7 +77,7 @@ export default function App() {
           messages={messages}
           onSendMessage={onSend}
           onPhaseChange={setPhase}
-          onLog={onLog}
+          onLog={addLog}
         />
       );
     case 'executor':
@@ -74,9 +87,9 @@ export default function App() {
           files={files}
           messages={messages}
           onSendMessage={onSend}
-          onUpdateFile={(path, content) => updateFile(path, content, role)}
+          onUpdateFile={(path, content) => updateFile(path, content)}
           onPhaseChange={setPhase}
-          onLog={onLog}
+          onLog={addLog}
         />
       );
     case 'verifier':
@@ -87,7 +100,7 @@ export default function App() {
           messages={messages}
           onSendMessage={onSend}
           onPhaseChange={setPhase}
-          onLog={onLog}
+          onLog={addLog}
         />
       );
   }
