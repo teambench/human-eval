@@ -115,6 +115,7 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
                 <MarkdownViewer content={session.taskConfig.briefMd} />
               ) : (
                 <Terminal
+                  sessionId={session.sessionId}
                   disabled={!canEdit}
                   onCommand={cmd => onLog('command_run', { command: cmd })}
                 />

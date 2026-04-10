@@ -161,6 +161,7 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
             </div>
             <div style={{ height: 180, borderTop: '1px solid #333' }}>
               <Terminal
+                sessionId={session.sessionId}
                 disabled={!isActive}
                 onCommand={cmd => onLog('command_run', { command: cmd })}
               />
