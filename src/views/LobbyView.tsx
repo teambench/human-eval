@@ -116,12 +116,9 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
           {/* ── Step 1: Profile ── */}
           {step === 'profile' && (
             <FadeIn>
-              <h2 style={{ color: '#cdd6f4', fontSize: 22, fontWeight: 700, margin: '0 0 4px', textAlign: 'center' }}>
-                Welcome, participant
+              <h2 style={{ color: '#cdd6f4', fontSize: 22, fontWeight: 700, margin: '0 0 24px', textAlign: 'center' }}>
+                Profile
               </h2>
-              <p style={{ color: '#a6adc8', fontSize: 14, textAlign: 'center', margin: '0 0 28px' }}>
-                Tell us a bit about yourself before we begin.
-              </p>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                 <div style={{ display: 'flex', gap: 12 }}>
@@ -132,24 +129,10 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                   <Field label="Institution" value={profile.institution} onChange={v => setProfile(p => ({ ...p, institution: v }))} placeholder="University / Company" />
                   <Field label="Years of experience" value={profile.yearsExp} onChange={v => setProfile(p => ({ ...p, yearsExp: v }))} placeholder="e.g. 3" type="number" />
                 </div>
-                <div>
-                  <label style={{ color: '#a6adc8', fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>
-                    Primary expertise *
-                  </label>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {EXPERTISE_OPTIONS.map(e => (
-                      <button key={e} onClick={() => setProfile(p => ({ ...p, expertise: e }))} style={{
-                        padding: '6px 12px', fontSize: 12, borderRadius: 20, cursor: 'pointer',
-                        background: profile.expertise === e ? '#89b4fa' : '#1e1e2e',
-                        color: profile.expertise === e ? '#000' : '#a6adc8',
-                        border: `1px solid ${profile.expertise === e ? '#89b4fa' : '#333'}`,
-                        fontWeight: profile.expertise === e ? 700 : 400,
-                      }}>
-                        {e}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <ExpertisePicker
+                  value={profile.expertise}
+                  onChange={v => setProfile(p => ({ ...p, expertise: v }))}
+                />
               </div>
 
               <button
@@ -169,48 +152,18 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
           {/* ── Step 2: Task Selection ── */}
           {step === 'task' && (
             <FadeIn>
-              <h2 style={{ color: '#cdd6f4', fontSize: 22, fontWeight: 700, margin: '0 0 4px', textAlign: 'center' }}>
-                Choose your mission
+              <h2 style={{ color: '#cdd6f4', fontSize: 22, fontWeight: 700, margin: '0 0 20px', textAlign: 'center' }}>
+                Task
               </h2>
-              <p style={{ color: '#a6adc8', fontSize: 14, textAlign: 'center', margin: '0 0 20px' }}>
-                Select a software engineering task to solve.
-              </p>
 
               <div style={{
                 maxHeight: 420, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6,
                 paddingRight: 4,
               }}>
-                {TASK_CATALOG.map(task => {
-                  const isSelected = selectedTask?.taskId === task.taskId;
-                  return (
-                    <div
-                      key={task.taskId}
-                      onClick={() => setSelectedTask(task)}
-                      style={{
-                        padding: '10px 14px', background: isSelected ? '#1e1e2e' : '#181825',
-                        borderRadius: 8, cursor: 'pointer',
-                        border: `2px solid ${isSelected ? '#89b4fa' : 'transparent'}`,
-                        transition: 'all 0.15s',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{
-                            fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
-                            color: '#000', background: DIFFICULTY_COLORS[task.difficulty],
-                          }}>
-                            {task.difficulty.toUpperCase()}
-                          </span>
-                          <span style={{ color: '#cdd6f4', fontWeight: 600, fontSize: 13 }}>{task.taskId}</span>
-                        </div>
-                        <span style={{ color: '#585b70', fontSize: 11 }}>{task.category}</span>
-                      </div>
-                      <p style={{ color: '#a6adc8', fontSize: 12, margin: '4px 0 0', lineHeight: 1.4 }}>
-                        {task.description}
-                      </p>
-                    </div>
-                  );
-                })}
+                {TASK_CATALOG.map(task => (
+                  <TaskRow key={task.taskId} task={task} isSelected={selectedTask?.taskId === task.taskId}
+                    onClick={() => setSelectedTask(task)} />
+                ))}
               </div>
 
               <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
@@ -233,12 +186,12 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
           {/* ── Step 3: Mode + Role ── */}
           {step === 'mode' && (
             <FadeIn>
-              <h2 style={{ color: '#cdd6f4', fontSize: 22, fontWeight: 700, margin: '0 0 4px', textAlign: 'center' }}>
-                How do you want to play?
+              <h2 style={{ color: '#cdd6f4', fontSize: 22, fontWeight: 700, margin: '0 0 6px', textAlign: 'center' }}>
+                Mode
               </h2>
-              <p style={{ color: '#a6adc8', fontSize: 14, textAlign: 'center', margin: '0 0 24px' }}>
-                <span style={{ color: '#89b4fa', fontWeight: 600 }}>{selectedTask?.taskId}</span>
-                {' '}&middot; {selectedTask?.category} &middot;{' '}
+              <p style={{ color: '#585b70', fontSize: 13, textAlign: 'center', margin: '0 0 20px' }}>
+                <span style={{ color: '#89b4fa' }}>{selectedTask?.taskId}</span>
+                {' '}&middot;{' '}
                 <span style={{ color: DIFFICULTY_COLORS[selectedTask?.difficulty || 'medium'] }}>
                   {selectedTask?.difficulty}
                 </span>
@@ -506,6 +459,97 @@ function FadeIn({ children }: { children: React.ReactNode }) {
     {children}
     <style>{`@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }`}</style>
   </div>;
+}
+
+function TaskRow({ task, isSelected, onClick }: { task: TaskEntry; isSelected: boolean; onClick: () => void }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <div
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        padding: '10px 14px', background: isSelected ? '#1e1e2e' : '#181825',
+        borderRadius: 8, cursor: 'pointer', position: 'relative',
+        border: `2px solid ${isSelected ? '#89b4fa' : 'transparent'}`,
+        transition: 'all 0.15s',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{
+            fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+            color: '#000', background: DIFFICULTY_COLORS[task.difficulty],
+          }}>
+            {task.difficulty.toUpperCase()}
+          </span>
+          <span style={{ color: '#cdd6f4', fontWeight: 600, fontSize: 13 }}>{task.taskId}</span>
+        </div>
+        <span style={{ color: '#585b70', fontSize: 11 }}>{task.category}</span>
+      </div>
+      {/* Tooltip on hover */}
+      {hovered && (
+        <div style={{
+          position: 'absolute', left: 0, right: 0, top: '100%', zIndex: 10,
+          marginTop: 4, padding: '10px 14px', background: '#313244',
+          borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+          border: '1px solid #45475a',
+        }}>
+          <p style={{ color: '#cdd6f4', fontSize: 13, margin: 0, lineHeight: 1.5 }}>
+            {task.description}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExpertisePicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const isOther = value !== '' && !EXPERTISE_OPTIONS.slice(0, -1).includes(value);
+  const [otherText, setOtherText] = useState(isOther ? value : '');
+  const showInput = value === 'Other' || isOther;
+
+  return (
+    <div>
+      <label style={{ color: '#a6adc8', fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>
+        Primary expertise *
+      </label>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {EXPERTISE_OPTIONS.map(e => {
+          const active = e === 'Other' ? showInput : value === e;
+          return (
+            <button key={e} onClick={() => {
+              if (e === 'Other') {
+                onChange(otherText || 'Other');
+              } else {
+                onChange(e);
+              }
+            }} style={{
+              padding: '6px 12px', fontSize: 12, borderRadius: 20, cursor: 'pointer',
+              background: active ? '#89b4fa' : '#1e1e2e',
+              color: active ? '#000' : '#a6adc8',
+              border: `1px solid ${active ? '#89b4fa' : '#333'}`,
+              fontWeight: active ? 700 : 400,
+            }}>
+              {e}
+            </button>
+          );
+        })}
+      </div>
+      {showInput && (
+        <input
+          value={otherText}
+          onChange={e => { setOtherText(e.target.value); onChange(e.target.value || 'Other'); }}
+          placeholder="Specify your expertise..."
+          autoFocus
+          style={{
+            marginTop: 8, width: '100%', padding: '8px 12px', background: '#1e1e2e', color: '#cdd6f4',
+            border: '1px solid #89b4fa', borderRadius: 6, fontSize: 13, outline: 'none', boxSizing: 'border-box',
+          }}
+        />
+      )}
+    </div>
+  );
 }
 
 const backBtnStyle: React.CSSProperties = {
