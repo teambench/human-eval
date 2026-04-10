@@ -109,8 +109,13 @@ async def create_session(session_id: str, task_id: str = "DEMO_api_fix", body: C
         with open(full_path, "w") as f:
             f.write(content)
 
-    # Fix ownership: container runs as agent (uid 10001)
-    os.system(f"chown -R 10001:10001 {ws_path}")
+    # Make workspace world-writable so container agent (uid 10001) can access
+    os.chmod(ws_path, 0o777)
+    for root, dirs, fnames in os.walk(ws_path):
+        for d in dirs:
+            os.chmod(os.path.join(root, d), 0o777)
+        for fname in fnames:
+            os.chmod(os.path.join(root, fname), 0o666)
 
     try:
         container = docker_client.containers.run(
