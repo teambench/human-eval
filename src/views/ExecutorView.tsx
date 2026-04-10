@@ -6,6 +6,7 @@ import { CodeEditor } from '../components/CodeEditor';
 import { Terminal } from '../components/Terminal';
 import { Timer } from '../components/Timer';
 import { Resizer } from '../components/Resizer';
+import { Onboarding, EXECUTOR_STEPS } from '../components/Onboarding';
 import { SessionState, Role, FileEntry } from '../types';
 
 interface ExecutorViewProps {
@@ -37,6 +38,7 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#11111b' }}>
+      <Onboarding steps={EXECUTOR_STEPS} storageKey={`onboarding_executor_${session.sessionId}`} />
       {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -128,7 +130,7 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
                   sessionId={session.sessionId}
                   taskId={session.taskConfig.taskId}
                   files={files.map(f => ({ path: f.path, content: f.content }))}
-                  disabled={!canEdit}
+                  disabled={false}
                   onCommand={cmd => onLog('command_run', { command: cmd })}
                 />
               )}

@@ -1,0 +1,357 @@
+import { useState } from 'react';
+import { ref, set } from 'firebase/database';
+import { db } from '../firebase';
+import { Role, SessionMode } from '../types';
+
+/**
+ * CATME-lite Post-Task Survey
+ *
+ * Distilled from the CATME Behaviorally Anchored Rating Scale (Ohland et al., 2012).
+ * Five dimensions, each rated 1–5 Likert, ~3 minutes to complete.
+ */
+
+interface SurveyViewProps {
+  sessionId: string;
+  taskId: string;
+  role: Role;
+  mode: SessionMode;
+  participants: Record<string, { name: string; joinedAt: number }>;
+  onComplete: () => void;
+}
+
+interface Dimension {
+  id: string;
+  label: string;
+  prompt: string;
+  anchorLow: string;
+  anchorMid: string;
+  anchorHigh: string;
+}
+
+const DIMENSIONS: Dimension[] = [
+  {
+    id: 'contributing',
+    label: 'Contributing to the Team\'s Work',
+    prompt: 'This role contributed meaningfully to the task',
+    anchorLow: 'Did not do a fair share; sloppy or incomplete work',
+    anchorMid: 'Completed assignments on time; acceptable quality',
+    anchorHigh: 'Made important contributions; helped others',
+  },
+  {
+    id: 'interacting',
+    label: 'Interacting with Teammates',
+    prompt: 'This role communicated effectively with the team',
+    anchorLow: 'Took actions without input; didn\'t share info',
+    anchorMid: 'Listened and shared; participated in activities',
+    anchorHigh: 'Encouraged communication; sought and used feedback',
+  },
+  {
+    id: 'keeping_on_track',
+    label: 'Keeping the Team on Track',
+    prompt: 'This role helped keep the team focused and on track',
+    anchorLow: 'Unaware of progress; avoided discussing problems',
+    anchorMid: 'Noticed issues; alerted team when threatened',
+    anchorHigh: 'Monitored progress; gave timely, constructive feedback',
+  },
+  {
+    id: 'expecting_quality',
+    label: 'Expecting Quality',
+    prompt: 'This role maintained high quality standards',
+    anchorLow: 'Satisfied even if work didn\'t meet standards',
+    anchorMid: 'Encouraged good work; wanted to meet requirements',
+    anchorHigh: 'Motivated excellence; believed team could do outstanding work',
+  },
+  {
+    id: 'knowledge_skills',
+    label: 'Having Relevant Knowledge & Skills',
+    prompt: 'This role demonstrated relevant technical skills',
+    anchorLow: 'Missing basic qualifications; unable to contribute',
+    anchorMid: 'Had sufficient skills; could do some other members\' tasks',
+    anchorHigh: 'Strong skills; could perform any team member\'s role',
+  },
+];
+
+const TEAM_ROLES: Role[] = ['planner', 'executor', 'verifier'];
+
+const ROLE_COLORS: Record<string, string> = {
+  planner: '#6366f1',
+  executor: '#f59e0b',
+  verifier: '#10b981',
+  self: '#cba6f7',
+};
+
+const ROLE_LABELS: Record<string, string> = {
+  planner: 'Planner',
+  executor: 'Executor',
+  verifier: 'Verifier',
+  oracle: 'Oracle',
+};
+
+function LikertScale({ name, value, onChange }: {
+  name: string;
+  value: number | null;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', gap: 0, width: '100%' }}>
+      {[1, 2, 3, 4, 5].map(v => (
+        <label key={v} style={{ flex: 1, textAlign: 'center', cursor: 'pointer' }}>
+          <div
+            onClick={() => onChange(v)}
+            style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+              padding: '8px 4px', borderRadius: 8,
+              transition: 'background 0.15s',
+              background: value === v ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+            }}
+            onMouseEnter={e => { if (value !== v) (e.currentTarget as HTMLDivElement).style.background = '#1e1e2e'; }}
+            onMouseLeave={e => { if (value !== v) (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
+          >
+            <div style={{
+              width: 32, height: 32, borderRadius: '50%',
+              border: `2px solid ${value === v ? '#6366f1' : '#444'}`,
+              background: value === v ? '#6366f1' : 'transparent',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 14, fontWeight: 700,
+              color: value === v ? '#fff' : '#666',
+              transition: 'all 0.15s',
+            }}>
+              {v}
+            </div>
+          </div>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+export function SurveyView({ sessionId, taskId, role, mode, participants, onComplete }: SurveyViewProps) {
+  // Build list of targets to rate
+  const targets: { id: string; label: string; type: 'peer' | 'self' }[] = [];
+
+  if (mode === 'team') {
+    for (const r of TEAM_ROLES) {
+      if (r !== role) {
+        const pName = participants[r]?.name;
+        targets.push({
+          id: r,
+          label: `${ROLE_LABELS[r]}${pName ? ` (${pName})` : ''}`,
+          type: 'peer',
+        });
+      }
+    }
+  }
+  // Self-rating always
+  targets.push({
+    id: 'self',
+    label: mode === 'team' ? `${ROLE_LABELS[role]} (yourself)` : 'Yourself',
+    type: 'self',
+  });
+
+  // State: ratings[targetId][dimId] = 1-5
+  const [ratings, setRatings] = useState<Record<string, Record<string, number>>>({});
+  const [challenge, setChallenge] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const setRating = (targetId: string, dimId: string, value: number) => {
+    setRatings(prev => ({
+      ...prev,
+      [targetId]: { ...prev[targetId], [dimId]: value },
+    }));
+  };
+
+  // Check if all ratings are filled
+  const totalRequired = targets.length * DIMENSIONS.length;
+  const totalFilled = Object.values(ratings).reduce(
+    (sum, dims) => sum + Object.keys(dims).length, 0
+  );
+  const allFilled = totalFilled >= totalRequired;
+  const progress = Math.round((totalFilled / totalRequired) * 100);
+
+  const handleSubmit = async () => {
+    if (!allFilled || submitting) return;
+    setSubmitting(true);
+
+    const peerRatings: Record<string, Record<string, number>> = {};
+    let selfRating: Record<string, number> = {};
+
+    for (const [targetId, dims] of Object.entries(ratings)) {
+      if (targetId === 'self') {
+        selfRating = dims;
+      } else {
+        peerRatings[targetId] = dims;
+      }
+    }
+
+    const surveyData = {
+      schema_version: '1.0',
+      instrument: 'CATME-lite',
+      reference: 'Ohland et al. (2012) Academy of Management Learning & Education 11(4)',
+      timestamp: Date.now(),
+      timestampISO: new Date().toISOString(),
+      sessionId,
+      taskId,
+      mode,
+      respondentRole: role,
+      peerRatings,
+      selfRating,
+      openEnded: {
+        collaborationChallenge: challenge,
+      },
+    };
+
+    // Store in Firebase
+    try {
+      await set(ref(db, `teambench/sessions/${sessionId}/survey/${role}`), surveyData);
+    } catch (err) {
+      console.error('Failed to save survey:', err);
+    }
+
+    setSubmitting(false);
+    onComplete();
+  };
+
+  return (
+    <div style={{
+      minHeight: '100vh', background: '#11111b', display: 'flex',
+      justifyContent: 'center', padding: '32px 16px',
+    }}>
+      <div style={{ maxWidth: 680, width: '100%' }}>
+        {/* Header */}
+        <div style={{ textAlign: 'center', marginBottom: 32 }}>
+          <h1 style={{ color: '#cdd6f4', fontSize: 24, fontWeight: 700, margin: '0 0 4px' }}>
+            Teamwork Effectiveness Survey
+          </h1>
+          <p style={{ color: '#585b70', fontSize: 13, margin: '0 0 4px' }}>
+            {taskId} &middot; Your role: {ROLE_LABELS[role]}
+          </p>
+          <p style={{ color: '#6c7086', fontSize: 12 }}>
+            Based on CATME BARS (Ohland et al., 2012) &middot; ~3 minutes
+          </p>
+        </div>
+
+        {/* Progress bar */}
+        <div style={{
+          background: '#1e1e2e', borderRadius: 8, height: 6, marginBottom: 24,
+          overflow: 'hidden',
+        }}>
+          <div style={{
+            height: '100%', background: allFilled ? '#a6e3a1' : '#6366f1',
+            width: `${progress}%`, transition: 'width 0.3s, background 0.3s',
+            borderRadius: 8,
+          }} />
+        </div>
+
+        {/* Info box */}
+        <div style={{
+          background: 'rgba(99, 102, 241, 0.08)', border: '1px solid rgba(99, 102, 241, 0.2)',
+          borderRadius: 8, padding: '10px 14px', marginBottom: 24,
+          fontSize: 13, color: '#a6adc8',
+        }}>
+          <strong style={{ color: '#6366f1' }}>Instructions:</strong> Rate each team member on five
+          dimensions of teamwork effectiveness. Please complete this survey immediately &mdash; your
+          impressions are most accurate right after the task.
+        </div>
+
+        {/* Rating sections */}
+        {targets.map(target => (
+          <div key={target.id} style={{
+            background: '#1e1e2e', border: '1px solid #313244',
+            borderRadius: 12, padding: 20, marginBottom: 16,
+          }}>
+            {/* Section header */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16,
+            }}>
+              <span style={{
+                fontSize: 11, fontWeight: 700, padding: '3px 8px',
+                borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.05em',
+                background: `${ROLE_COLORS[target.type === 'self' ? 'self' : target.id]}22`,
+                color: ROLE_COLORS[target.type === 'self' ? 'self' : target.id],
+              }}>
+                {target.type === 'self' ? 'Self' : 'Peer'}
+              </span>
+              <span style={{ fontSize: 15, fontWeight: 600, color: '#cdd6f4' }}>
+                {target.label}
+              </span>
+            </div>
+
+            {/* Dimensions */}
+            {DIMENSIONS.map((dim, i) => (
+              <div key={dim.id} style={{
+                paddingBottom: i < DIMENSIONS.length - 1 ? 16 : 0,
+                marginBottom: i < DIMENSIONS.length - 1 ? 16 : 0,
+                borderBottom: i < DIMENSIONS.length - 1 ? '1px solid #313244' : 'none',
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4', marginBottom: 2 }}>
+                  {dim.label}
+                </div>
+                <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 8 }}>
+                  {dim.prompt}
+                </div>
+                <LikertScale
+                  name={`${target.id}_${dim.id}`}
+                  value={ratings[target.id]?.[dim.id] ?? null}
+                  onChange={v => setRating(target.id, dim.id, v)}
+                />
+                <div style={{
+                  display: 'flex', justifyContent: 'space-between',
+                  fontSize: 10, color: '#45475a', marginTop: 2, padding: '0 4px',
+                }}>
+                  <span style={{ maxWidth: '35%' }}>{dim.anchorLow}</span>
+                  <span style={{ maxWidth: '35%', textAlign: 'right' }}>{dim.anchorHigh}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
+
+        {/* Open-ended */}
+        <div style={{
+          background: '#1e1e2e', border: '1px solid #313244',
+          borderRadius: 12, padding: 20, marginBottom: 24,
+        }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#cdd6f4', marginBottom: 4 }}>
+            Open-Ended Feedback
+          </div>
+          <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 10 }}>
+            What was the most challenging part of collaborating on this task?
+          </div>
+          <textarea
+            value={challenge}
+            onChange={e => setChallenge(e.target.value)}
+            placeholder="Consider communication barriers, role constraints, coordination difficulties, or technical gaps... (optional)"
+            maxLength={500}
+            style={{
+              width: '100%', minHeight: 80, background: '#313244', color: '#cdd6f4',
+              border: '1px solid #45475a', borderRadius: 8, padding: 10, fontSize: 13,
+              resize: 'vertical', fontFamily: 'inherit',
+            }}
+          />
+        </div>
+
+        {/* Submit */}
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <button
+            onClick={handleSubmit}
+            disabled={!allFilled || submitting}
+            style={{
+              background: allFilled ? '#6366f1' : '#45475a',
+              color: allFilled ? '#fff' : '#6c7086',
+              border: 'none', borderRadius: 8, padding: '14px 48px',
+              fontWeight: 700, fontSize: 15, cursor: allFilled ? 'pointer' : 'not-allowed',
+              transition: 'all 0.2s',
+              opacity: submitting ? 0.6 : 1,
+            }}
+          >
+            {submitting ? 'Submitting...' : allFilled ? 'Submit Survey' : `${totalRequired - totalFilled} ratings remaining`}
+          </button>
+        </div>
+
+        <p style={{ textAlign: 'center', color: '#45475a', fontSize: 11, marginTop: 12 }}>
+          Your responses are stored securely and used only for research purposes.
+        </p>
+      </div>
+    </div>
+  );
+}

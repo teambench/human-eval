@@ -5,6 +5,7 @@ import { CodeEditor } from '../components/CodeEditor';
 import { Terminal, gradeSession } from '../components/Terminal';
 import { Timer } from '../components/Timer';
 import { Resizer } from '../components/Resizer';
+import { Onboarding, ORACLE_STEPS } from '../components/Onboarding';
 import { SessionState, FileEntry } from '../types';
 
 interface OracleViewProps {
@@ -47,6 +48,7 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#11111b' }}>
+      <Onboarding steps={ORACLE_STEPS} storageKey={`onboarding_oracle_${session.sessionId}`} />
       {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',

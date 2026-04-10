@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useFirebaseSession } from './hooks/useFirebaseSession';
 import { LobbyView } from './views/LobbyView';
 import { PlannerView } from './views/PlannerView';
@@ -5,6 +6,7 @@ import { ExecutorView } from './views/ExecutorView';
 import { VerifierView } from './views/VerifierView';
 import { OracleView } from './views/OracleView';
 import { CompletedView } from './views/CompletedView';
+import { SurveyView } from './views/SurveyView';
 
 export default function App() {
   const {
@@ -15,8 +17,22 @@ export default function App() {
     join, sendMessage, updateFile, setPhase, exportLogs, addLog,
   } = useFirebaseSession();
 
-  // Completed
-  if (phase === 'completed' && task && sessionId) {
+  const [surveyCompleted, setSurveyCompleted] = useState(false);
+
+  // Completed — show survey first, then completion screen
+  if (phase === 'completed' && task && sessionId && role) {
+    if (!surveyCompleted) {
+      return (
+        <SurveyView
+          sessionId={sessionId}
+          taskId={task.taskId}
+          role={role}
+          mode={mode}
+          participants={participants}
+          onComplete={() => setSurveyCompleted(true)}
+        />
+      );
+    }
     return (
       <CompletedView
         taskId={task.taskId}

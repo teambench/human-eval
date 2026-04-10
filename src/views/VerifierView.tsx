@@ -4,6 +4,7 @@ import { MarkdownViewer } from '../components/MarkdownViewer';
 import { FileTree } from '../components/FileTree';
 import { CodeEditor } from '../components/CodeEditor';
 import { Timer } from '../components/Timer';
+import { Onboarding, VERIFIER_STEPS } from '../components/Onboarding';
 import { SessionState, Role, FileEntry } from '../types';
 
 interface VerifierViewProps {
@@ -38,6 +39,7 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#11111b' }}>
+      <Onboarding steps={VERIFIER_STEPS} storageKey={`onboarding_verifier_${session.sessionId}`} />
       {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',

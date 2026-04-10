@@ -4,6 +4,7 @@ import { MarkdownViewer } from '../components/MarkdownViewer';
 import { FileTree } from '../components/FileTree';
 import { CodeEditor } from '../components/CodeEditor';
 import { Timer } from '../components/Timer';
+import { Onboarding, PLANNER_STEPS } from '../components/Onboarding';
 import { SessionState, Role, FileEntry } from '../types';
 
 interface PlannerViewProps {
@@ -28,6 +29,7 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#11111b' }}>
+      <Onboarding steps={PLANNER_STEPS} storageKey={`onboarding_planner_${session.sessionId}`} />
       {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
