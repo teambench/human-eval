@@ -462,15 +462,12 @@ function FadeIn({ children }: { children: React.ReactNode }) {
 }
 
 function TaskRow({ task, isSelected, onClick }: { task: TaskEntry; isSelected: boolean; onClick: () => void }) {
-  const [hovered, setHovered] = useState(false);
   return (
     <div
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
         padding: '10px 14px', background: isSelected ? '#1e1e2e' : '#181825',
-        borderRadius: 8, cursor: 'pointer', position: 'relative',
+        borderRadius: 8, cursor: 'pointer',
         border: `2px solid ${isSelected ? '#89b4fa' : 'transparent'}`,
         transition: 'all 0.15s',
       }}
@@ -487,17 +484,20 @@ function TaskRow({ task, isSelected, onClick }: { task: TaskEntry; isSelected: b
         </div>
         <span style={{ color: '#585b70', fontSize: 11 }}>{task.category}</span>
       </div>
-      {/* Tooltip on hover */}
-      {hovered && (
+      {/* Show description when selected */}
+      {isSelected && (
         <div style={{
-          position: 'absolute', left: 0, right: 0, top: '100%', zIndex: 10,
-          marginTop: 4, padding: '10px 14px', background: '#313244',
-          borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-          border: '1px solid #45475a',
+          marginTop: 8, padding: '10px 12px', background: '#313244',
+          borderRadius: 6, borderLeft: '3px solid #89b4fa',
         }}>
-          <p style={{ color: '#cdd6f4', fontSize: 13, margin: 0, lineHeight: 1.5 }}>
+          <p style={{ color: '#cdd6f4', fontSize: 13, margin: '0 0 6px', lineHeight: 1.5 }}>
             {task.description}
           </p>
+          <div style={{ display: 'flex', gap: 12, fontSize: 11, color: '#a6adc8' }}>
+            <span>Category: <span style={{ color: '#89b4fa' }}>{task.category}</span></span>
+            <span>Difficulty: <span style={{ color: DIFFICULTY_COLORS[task.difficulty] }}>{task.difficulty}</span></span>
+            <span>Files: {task.fileCount || '2-4'} files</span>
+          </div>
         </div>
       )}
     </div>

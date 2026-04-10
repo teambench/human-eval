@@ -6,6 +6,7 @@ export interface TaskEntry {
   category: string;
   difficulty: 'easy' | 'medium' | 'hard' | 'expert';
   description: string;
+  fileCount?: string; // e.g. "3 files"
 }
 
 // 20 representative tasks from the TeamBench benchmark

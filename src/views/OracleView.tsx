@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { MarkdownViewer } from '../components/MarkdownViewer';
 import { FileTree } from '../components/FileTree';
 import { CodeEditor } from '../components/CodeEditor';
-import { Terminal } from '../components/Terminal';
+import { Terminal, gradeSession } from '../components/Terminal';
 import { Timer } from '../components/Timer';
 import { SessionState, FileEntry } from '../types';
 
@@ -17,15 +17,23 @@ interface OracleViewProps {
 export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog }: OracleViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(files.find(f => !f.readOnly)?.path ?? null);
   const [leftTab, setLeftTab] = useState<'spec' | 'brief'>('spec');
-  const [bottomTab, setBottomTab] = useState<'terminal' | 'none'>('terminal');
-  const [verdict, setVerdict] = useState<'pass' | 'fail' | ''>('');
-  const [notes, setNotes] = useState('');
+  const [grading, setGrading] = useState(false);
+  const [gradeResult, setGradeResult] = useState<{ status: string; score?: any; output?: string } | null>(null);
 
   const currentFile = files.find(f => f.path === selectedFile);
   const isActive = session.phase !== 'lobby' && session.phase !== 'completed';
 
-  const handleComplete = () => {
-    onLog('oracle_submit', { verdict, notes });
+  const handleSubmit = async () => {
+    setGrading(true);
+    onLog('oracle_submit_grade');
+
+    // Run auto-grading via backend
+    const result = await gradeSession(session.sessionId);
+    setGradeResult(result);
+    onLog('oracle_grade_result', { ...result });
+    setGrading(false);
+
+    // Mark completed regardless of grade
     onPhaseChange('completed');
   };
 
@@ -84,68 +92,55 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
             />
           </div>
 
-          {/* Verdict panel */}
+          {/* Submit & Grade panel */}
           {isActive && (
             <div style={{ padding: 12, background: '#1e1e2e', borderTop: '1px solid #333' }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#cdd6f4', marginBottom: 8 }}>
-                Self-Assessment
-              </div>
-              <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-                <button
-                  onClick={() => setVerdict('pass')}
-                  style={{
-                    flex: 1, padding: '6px', border: '2px solid',
-                    borderColor: verdict === 'pass' ? '#10b981' : '#555',
-                    background: verdict === 'pass' ? '#10b98133' : 'transparent',
-                    color: '#10b981', borderRadius: 6, cursor: 'pointer', fontWeight: 700, fontSize: 12,
-                  }}
-                >
-                  PASS
-                </button>
-                <button
-                  onClick={() => setVerdict('fail')}
-                  style={{
-                    flex: 1, padding: '6px', border: '2px solid',
-                    borderColor: verdict === 'fail' ? '#f38ba8' : '#555',
-                    background: verdict === 'fail' ? '#f38ba833' : 'transparent',
-                    color: '#f38ba8', borderRadius: 6, cursor: 'pointer', fontWeight: 700, fontSize: 12,
-                  }}
-                >
-                  FAIL
-                </button>
-              </div>
-              <textarea
-                value={notes}
-                onChange={e => setNotes(e.target.value)}
-                placeholder="Notes on your solution..."
-                style={{
-                  width: '100%', height: 50, background: '#313244', color: '#cdd6f4',
-                  border: '1px solid #555', borderRadius: 4, padding: 6, fontSize: 12,
-                  resize: 'vertical', fontFamily: 'inherit', boxSizing: 'border-box',
-                }}
-              />
               <button
-                onClick={handleComplete}
+                onClick={handleSubmit}
+                disabled={grading}
                 style={{
-                  marginTop: 6, width: '100%', background: '#cba6f7', color: '#fff',
-                  border: 'none', borderRadius: 6, padding: '8px', cursor: 'pointer',
-                  fontWeight: 700, fontSize: 13,
+                  width: '100%', background: grading ? '#555' : '#cba6f7', color: '#fff',
+                  border: 'none', borderRadius: 6, padding: '10px', cursor: grading ? 'wait' : 'pointer',
+                  fontWeight: 700, fontSize: 14,
                 }}
               >
-                Submit & Complete
+                {grading ? 'Grading...' : 'Submit & Grade'}
               </button>
+              <p style={{ color: '#585b70', fontSize: 11, margin: '6px 0 0', textAlign: 'center' }}>
+                Your code will be automatically graded using the task's test suite.
+              </p>
+            </div>
+          )}
+
+          {/* Grade result */}
+          {gradeResult && (
+            <div style={{
+              padding: 12, background: '#1e1e2e', borderTop: '1px solid #333',
+            }}>
+              <div style={{
+                fontSize: 13, fontWeight: 700, marginBottom: 6,
+                color: gradeResult.score?.pass ? '#a6e3a1' : '#f38ba8',
+              }}>
+                {gradeResult.score?.pass ? 'PASSED' : gradeResult.status === 'error' ? 'Grading unavailable' : 'FAILED'}
+              </div>
+              {gradeResult.output && (
+                <pre style={{
+                  fontSize: 11, color: '#a6adc8', background: '#181825',
+                  padding: 8, borderRadius: 4, maxHeight: 100, overflowY: 'auto',
+                  whiteSpace: 'pre-wrap', margin: 0,
+                }}>
+                  {gradeResult.output.slice(-500)}
+                </pre>
+              )}
             </div>
           )}
         </div>
 
         {/* Center: File tree + Editor + Terminal */}
         <div style={{ flex: 1, display: 'flex' }}>
-          {/* File tree */}
           <div style={{ width: 200 }}>
             <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
           </div>
-
-          {/* Editor + Terminal */}
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
             <div style={{ flex: 1, overflow: 'hidden' }}>
               {currentFile ? (
@@ -162,6 +157,7 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
             <div style={{ height: 180, borderTop: '1px solid #333' }}>
               <Terminal
                 sessionId={session.sessionId}
+                taskId={session.taskConfig.taskId}
                 disabled={!isActive}
                 onCommand={cmd => onLog('command_run', { command: cmd })}
               />

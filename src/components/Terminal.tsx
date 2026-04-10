@@ -7,14 +7,14 @@ const API_URL = `https://${TUNNEL_HOST}`;
 
 interface TerminalProps {
   sessionId?: string;
+  taskId?: string;
   disabled?: boolean;
   onCommand?: (cmd: string) => void;
 }
 
-export function Terminal({ sessionId, disabled, onCommand }: TerminalProps) {
+export function Terminal({ sessionId, taskId, disabled, onCommand }: TerminalProps) {
   const termRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const xtermRef = useRef<any>(null);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'no-session'>('no-session');
   const [fallback, setFallback] = useState(false);
 
@@ -22,18 +22,15 @@ export function Terminal({ sessionId, disabled, onCommand }: TerminalProps) {
     if (!sessionId || disabled || !termRef.current) return;
 
     let cancelled = false;
+    let cleanupFn: (() => void) | undefined;
 
     async function init() {
-      // Dynamically import xterm (keeps bundle smaller if terminal not used)
       const { Terminal: XTerm } = await import('@xterm/xterm');
       const { FitAddon } = await import('@xterm/addon-fit');
-
-      // Import xterm CSS
       await import('@xterm/xterm/css/xterm.css');
 
       if (cancelled || !termRef.current) return;
 
-      // Create terminal
       const term = new XTerm({
         cursorBlink: true,
         fontSize: 13,
@@ -51,82 +48,67 @@ export function Terminal({ sessionId, disabled, onCommand }: TerminalProps) {
       term.loadAddon(fitAddon);
       term.open(termRef.current);
       fitAddon.fit();
-      xtermRef.current = term;
 
-      // Resize handler
       const resizeObserver = new ResizeObserver(() => fitAddon.fit());
-      resizeObserver.observe(termRef.current);
+      resizeObserver.observe(termRef.current!);
 
-      // Try to create container session via API
+      cleanupFn = () => {
+        resizeObserver.disconnect();
+        wsRef.current?.close();
+        term.dispose();
+      };
+
+      // Try connecting to real backend
       setStatus('connecting');
-      try {
-        const resp = await fetch(`${API_URL}/api/session/${sessionId}/create?task_id=DEMO_api_fix`, {
-          method: 'POST',
-        });
+      term.write('Connecting to sandbox...\r\n');
 
+      try {
+        const resp = await fetch(
+          `${API_URL}/api/session/${sessionId}/create?task_id=${encodeURIComponent(taskId || 'DEMO_api_fix')}`,
+          { method: 'POST' }
+        );
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
-        // Connect WebSocket
         const ws = new WebSocket(`${BACKEND_URL}/ws/terminal/${sessionId}`);
         wsRef.current = ws;
 
         ws.onopen = () => {
-          if (!cancelled) {
-            setStatus('connected');
-            // Send initial resize
-            ws.send(JSON.stringify({
-              type: 'resize',
-              rows: term.rows,
-              cols: term.cols,
-            }));
-          }
+          if (cancelled) return;
+          setStatus('connected');
+          term.clear();
+          ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
         };
 
         ws.onmessage = (event) => {
           const msg = JSON.parse(event.data);
-          if (msg.type === 'output') {
-            term.write(msg.data);
-          }
+          if (msg.type === 'output') term.write(msg.data);
         };
 
         ws.onclose = () => {
           if (!cancelled) {
             setStatus('disconnected');
-            term.write('\r\n\x1b[31m[Terminal disconnected]\x1b[0m\r\n');
+            term.write('\r\n\x1b[31m[Disconnected]\x1b[0m\r\n');
           }
         };
 
-        ws.onerror = () => {
-          if (!cancelled) {
-            setStatus('disconnected');
-            setFallback(true);
-          }
-        };
+        ws.onerror = () => { if (!cancelled) { setFallback(true); setStatus('disconnected'); } };
 
-        // Send terminal input to WebSocket
         term.onData((data: string) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'input', data }));
-          }
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data }));
         });
-
-        // Handle terminal resize
         term.onResize(({ rows, cols }: { rows: number; cols: number }) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'resize', rows, cols }));
-          }
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', rows, cols }));
         });
 
-      } catch (err) {
-        console.warn('Backend not available, using fallback terminal:', err);
+      } catch {
+        // Fallback: local echo terminal
         setFallback(true);
         setStatus('disconnected');
-        term.write('Backend server not running. Using local-only mode.\r\n');
-        term.write('Commands are logged but not executed.\r\n');
-        term.write('To enable real execution, start the backend:\r\n');
-        term.write('  cd backend && ./start.sh\r\n\r\n');
+        term.clear();
+        term.write('\x1b[33mSandbox unavailable — using local mode.\x1b[0m\r\n');
+        term.write('Commands are logged. Start backend for real execution.\r\n\r\n');
+        term.write('$ ');
 
-        // Fallback: simple echo terminal
         let line = '';
         term.onData((data: string) => {
           if (data === '\r') {
@@ -138,33 +120,18 @@ export function Terminal({ sessionId, disabled, onCommand }: TerminalProps) {
             line = '';
             term.write('$ ');
           } else if (data === '\x7f') {
-            // Backspace
-            if (line.length > 0) {
-              line = line.slice(0, -1);
-              term.write('\b \b');
-            }
+            if (line.length > 0) { line = line.slice(0, -1); term.write('\b \b'); }
           } else {
             line += data;
             term.write(data);
           }
         });
-        term.write('$ ');
       }
-
-      return () => {
-        cancelled = true;
-        resizeObserver.disconnect();
-        wsRef.current?.close();
-        term.dispose();
-      };
     }
 
-    const cleanup = init();
-    return () => {
-      cancelled = true;
-      cleanup.then(fn => fn?.());
-    };
-  }, [sessionId, disabled]);
+    init();
+    return () => { cancelled = true; cleanupFn?.(); };
+  }, [sessionId, taskId, disabled]);
 
   if (disabled) {
     return (
@@ -188,13 +155,25 @@ export function Terminal({ sessionId, disabled, onCommand }: TerminalProps) {
           fontSize: 10, fontWeight: 600,
           color: status === 'connected' ? '#a6e3a1' : status === 'connecting' ? '#f9e2af' : '#f38ba8',
         }}>
-          {status === 'connected' ? 'Connected to sandbox'
+          {status === 'connected' ? 'Connected'
             : status === 'connecting' ? 'Connecting...'
-            : fallback ? 'Local mode (backend not running)'
+            : fallback ? 'Local mode'
             : 'Disconnected'}
         </span>
       </div>
       <div ref={termRef} style={{ flex: 1 }} />
     </div>
   );
+}
+
+// Grading API — call from views when submitting
+export async function gradeSession(sessionId: string): Promise<{
+  status: string; exit_code?: number; output?: string; score?: any;
+}> {
+  try {
+    const resp = await fetch(`${API_URL}/api/session/${sessionId}/grade`, { method: 'POST' });
+    return await resp.json();
+  } catch {
+    return { status: 'error', output: 'Backend not available' };
+  }
 }
