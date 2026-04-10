@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 
-// Backend URL — configurable via env or defaults to same-host
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'ws://18.27.78.150:8443';
-const API_URL = import.meta.env.VITE_API_URL || 'http://18.27.78.150:8443';
+// Backend URL — Cloudflare tunnel provides HTTPS/WSS for free
+const TUNNEL_HOST = import.meta.env.VITE_BACKEND_HOST || 'shepherd-align-massive-census.trycloudflare.com';
+const BACKEND_URL = `wss://${TUNNEL_HOST}`;
+const API_URL = `https://${TUNNEL_HOST}`;
 
 interface TerminalProps {
   sessionId?: string;
