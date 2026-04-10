@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { MarkdownViewer } from '../components/MarkdownViewer';
 import { FileTree } from '../components/FileTree';
 import { CodeEditor } from '../components/CodeEditor';
 import { Terminal, gradeSession } from '../components/Terminal';
 import { Timer } from '../components/Timer';
+import { Resizer } from '../components/Resizer';
 import { SessionState, FileEntry } from '../types';
 
 interface OracleViewProps {
@@ -19,23 +20,28 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
   const [leftTab, setLeftTab] = useState<'spec' | 'brief'>('spec');
   const [grading, setGrading] = useState(false);
   const [gradeResult, setGradeResult] = useState<{ status: string; score?: any; output?: string } | null>(null);
+  const [finished, setFinished] = useState(false);
+
+  // Resizable panel sizes
+  const [leftWidth, setLeftWidth] = useState(380);
+  const [fileTreeWidth, setFileTreeWidth] = useState(200);
+  const [terminalHeight, setTerminalHeight] = useState(180);
 
   const currentFile = files.find(f => f.path === selectedFile);
-  const isActive = session.phase !== 'lobby' && session.phase !== 'completed';
+  // Terminal stays active until user clicks "Finish Session"
+  const isActive = session.phase !== 'lobby' && !finished;
 
   const handleSubmit = async () => {
     setGrading(true);
     onLog('oracle_submit_grade');
-
-    // Run auto-grading via backend
     const result = await gradeSession(session.sessionId);
     setGradeResult(result);
     onLog('oracle_grade_result', { ...result });
     setGrading(false);
-    // Don't auto-complete — let user see the result first
   };
 
   const handleFinish = () => {
+    setFinished(true);
     onPhaseChange('completed');
   };
 
@@ -71,7 +77,7 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
       {/* Main content */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {/* Left panel: Spec / Brief */}
-        <div style={{ width: 380, display: 'flex', flexDirection: 'column', borderRight: '1px solid #333' }}>
+        <div style={{ width: leftWidth, minWidth: 250, maxWidth: 600, display: 'flex', flexDirection: 'column' }}>
           <div style={{ display: 'flex', background: '#181825', borderBottom: '1px solid #333' }}>
             {(['spec', 'brief'] as const).map(tab => (
               <button
@@ -89,13 +95,11 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
             ))}
           </div>
           <div style={{ flex: 1, overflow: 'hidden' }}>
-            <MarkdownViewer
-              content={leftTab === 'spec' ? session.taskConfig.specMd : session.taskConfig.briefMd}
-            />
+            <MarkdownViewer content={leftTab === 'spec' ? session.taskConfig.specMd : session.taskConfig.briefMd} />
           </div>
 
           {/* Submit & Grade panel */}
-          {isActive && (
+          {isActive && !gradeResult && (
             <div style={{ padding: 12, background: '#1e1e2e', borderTop: '1px solid #333' }}>
               <button
                 onClick={handleSubmit}
@@ -109,16 +113,14 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
                 {grading ? 'Grading...' : 'Submit & Grade'}
               </button>
               <p style={{ color: '#585b70', fontSize: 11, margin: '6px 0 0', textAlign: 'center' }}>
-                Your code will be automatically graded using the task's test suite.
+                Auto-graded using the task's test suite.
               </p>
             </div>
           )}
 
           {/* Grade result */}
           {gradeResult && (
-            <div style={{
-              padding: 12, background: '#1e1e2e', borderTop: '1px solid #333',
-            }}>
+            <div style={{ padding: 12, background: '#1e1e2e', borderTop: '1px solid #333' }}>
               <div style={{
                 fontSize: 13, fontWeight: 700, marginBottom: 6,
                 color: gradeResult.score?.pass ? '#a6e3a1' : '#f38ba8',
@@ -136,7 +138,7 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
               )}
               <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                 <button
-                  onClick={() => { setGradeResult(null); }}
+                  onClick={() => setGradeResult(null)}
                   style={{
                     flex: 1, padding: '8px', background: '#313244', color: '#cdd6f4',
                     border: '1px solid #555', borderRadius: 6, cursor: 'pointer',
@@ -160,11 +162,16 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
           )}
         </div>
 
+        <Resizer direction="horizontal" onResize={useCallback((d: number) => setLeftWidth(w => Math.max(250, Math.min(600, w + d))), [])} />
+
         {/* Center: File tree + Editor + Terminal */}
-        <div style={{ flex: 1, display: 'flex' }}>
-          <div style={{ width: 200 }}>
+        <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+          <div style={{ width: fileTreeWidth, minWidth: 120, maxWidth: 350 }}>
             <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
           </div>
+
+          <Resizer direction="horizontal" onResize={useCallback((d: number) => setFileTreeWidth(w => Math.max(120, Math.min(350, w + d))), [])} />
+
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
             <div style={{ flex: 1, overflow: 'hidden' }}>
               {currentFile ? (
@@ -178,12 +185,15 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
                 <div style={{ padding: 24, color: '#888' }}>Select a file to edit</div>
               )}
             </div>
-            <div style={{ height: 180, borderTop: '1px solid #333' }}>
+
+            <Resizer direction="vertical" onResize={useCallback((d: number) => setTerminalHeight(h => Math.max(80, Math.min(500, h - d))), [])} />
+
+            <div style={{ height: terminalHeight, minHeight: 80 }}>
               <Terminal
                 sessionId={session.sessionId}
                 taskId={session.taskConfig.taskId}
                 files={files.map(f => ({ path: f.path, content: f.content }))}
-                disabled={!isActive}
+                disabled={finished}
                 onCommand={cmd => onLog('command_run', { command: cmd })}
               />
             </div>

@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash git curl ca-certificates coreutils findutils vim nano \
+ && rm -rf /var/lib/apt/lists/*
+
+# Install common Python libraries participants will need
+RUN pip install --no-cache-dir \
+    flask \
+    pytest \
+    pytest-cov \
+    requests \
+    pandas \
+    numpy \
+    scikit-learn \
+    pyjwt \
+    cryptography \
+    hypothesis
+
+WORKDIR /
+RUN useradd -m -u 10001 agent
+USER agent

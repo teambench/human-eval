@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { ChatPanel } from '../components/ChatPanel';
 import { MarkdownViewer } from '../components/MarkdownViewer';
 import { FileTree } from '../components/FileTree';
 import { CodeEditor } from '../components/CodeEditor';
 import { Terminal } from '../components/Terminal';
 import { Timer } from '../components/Timer';
+import { Resizer } from '../components/Resizer';
 import { SessionState, Role, FileEntry } from '../types';
 
 interface ExecutorViewProps {
@@ -20,6 +21,11 @@ interface ExecutorViewProps {
 export function ExecutorView({ session, files, messages, onSendMessage, onUpdateFile, onPhaseChange, onLog }: ExecutorViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(files.find(f => !f.readOnly)?.path ?? null);
   const [bottomTab, setBottomTab] = useState<'terminal' | 'brief'>('brief');
+
+  // Resizable panel sizes
+  const [fileTreeWidth, setFileTreeWidth] = useState(200);
+  const [chatWidth, setChatWidth] = useState(340);
+  const [terminalHeight, setTerminalHeight] = useState(200);
 
   const currentFile = files.find(f => f.path === selectedFile);
   const canEdit = session.phase === 'execution';
@@ -72,9 +78,11 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
       {/* Main content */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {/* Left: File tree */}
-        <div style={{ width: 200 }}>
+        <div style={{ width: fileTreeWidth, minWidth: 120, maxWidth: 350 }}>
           <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
         </div>
+
+        <Resizer direction="horizontal" onResize={useCallback((d: number) => setFileTreeWidth(w => Math.max(120, Math.min(350, w + d))), [])} />
 
         {/* Center: Editor + Terminal */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
@@ -92,8 +100,10 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
             )}
           </div>
 
+          <Resizer direction="vertical" onResize={useCallback((d: number) => setTerminalHeight(h => Math.max(80, Math.min(500, h - d))), [])} />
+
           {/* Bottom panel: Terminal / Brief */}
-          <div style={{ height: 200, borderTop: '1px solid #333', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ height: terminalHeight, minHeight: 80, display: 'flex', flexDirection: 'column' }}>
             <div style={{ display: 'flex', background: '#181825', borderBottom: '1px solid #333' }}>
               {(['brief', 'terminal'] as const).map(tab => (
                 <button
@@ -126,8 +136,10 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
           </div>
         </div>
 
+        <Resizer direction="horizontal" onResize={useCallback((d: number) => setChatWidth(w => Math.max(250, Math.min(500, w - d))), [])} />
+
         {/* Right: Chat */}
-        <div style={{ width: 340, borderLeft: '1px solid #333' }}>
+        <div style={{ width: chatWidth, minWidth: 250, maxWidth: 500 }}>
           <ChatPanel
             role="executor"
             messages={messages}
