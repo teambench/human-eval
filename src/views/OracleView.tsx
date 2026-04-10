@@ -32,8 +32,10 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
     setGradeResult(result);
     onLog('oracle_grade_result', { ...result });
     setGrading(false);
+    // Don't auto-complete — let user see the result first
+  };
 
-    // Mark completed regardless of grade
+  const handleFinish = () => {
     onPhaseChange('completed');
   };
 
@@ -132,6 +134,28 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
                   {gradeResult.output.slice(-500)}
                 </pre>
               )}
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <button
+                  onClick={() => { setGradeResult(null); }}
+                  style={{
+                    flex: 1, padding: '8px', background: '#313244', color: '#cdd6f4',
+                    border: '1px solid #555', borderRadius: 6, cursor: 'pointer',
+                    fontWeight: 600, fontSize: 12,
+                  }}
+                >
+                  Keep Editing
+                </button>
+                <button
+                  onClick={handleFinish}
+                  style={{
+                    flex: 1, padding: '8px', background: '#a6e3a1', color: '#000',
+                    border: 'none', borderRadius: 6, cursor: 'pointer',
+                    fontWeight: 700, fontSize: 12,
+                  }}
+                >
+                  Finish Session
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -158,6 +182,7 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
               <Terminal
                 sessionId={session.sessionId}
                 taskId={session.taskConfig.taskId}
+                files={files.map(f => ({ path: f.path, content: f.content }))}
                 disabled={!isActive}
                 onCommand={cmd => onLog('command_run', { command: cmd })}
               />

@@ -71,8 +71,13 @@ def cleanup_session(session_id: str):
         shutil.rmtree(workspace_dir, ignore_errors=True)
 
 
+from pydantic import BaseModel
+
+class CreateSessionRequest(BaseModel):
+    files: dict[str, str] = {}  # path -> content, sent from frontend
+
 @app.post("/api/session/{session_id}/create")
-async def create_session(session_id: str, task_id: str = "DEMO_api_fix"):
+async def create_session(session_id: str, task_id: str = "DEMO_api_fix", body: CreateSessionRequest = CreateSessionRequest()):
     """Create a Docker container for a session."""
     if len(sessions) >= MAX_CONTAINERS:
         raise HTTPException(503, "Too many active sessions. Try again later.")
@@ -82,23 +87,35 @@ async def create_session(session_id: str, task_id: str = "DEMO_api_fix"):
 
     # Create a temporary workspace directory
     workspace_dir = tempfile.mkdtemp(prefix=f"tb_{session_id}_")
+    ws_path = os.path.join(workspace_dir, "workspace")
+    os.makedirs(ws_path, exist_ok=True)
 
     # Check if task has generated files (from generator or static)
     task_dir = Path(TEAMBENCH_ROOT) / "tasks" / task_id
     if task_dir.exists():
-        # Copy static workspace
         static_workspace = task_dir / "workspace"
         if static_workspace.exists():
-            shutil.copytree(static_workspace, os.path.join(workspace_dir, "workspace"))
+            shutil.copytree(static_workspace, ws_path, dirs_exist_ok=True)
 
-    # Ensure workspace subdir exists
-    ws_path = os.path.join(workspace_dir, "workspace")
-    os.makedirs(ws_path, exist_ok=True)
+    # Write files sent from the frontend (Monaco editor contents)
+    for file_path, content in body.files.items():
+        # Security: prevent path traversal
+        safe_path = os.path.normpath(file_path).lstrip("/").lstrip("../")
+        full_path = os.path.join(ws_path, safe_path)
+        real_path = os.path.realpath(full_path)
+        if not real_path.startswith(os.path.realpath(ws_path)):
+            continue
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "w") as f:
+            f.write(content)
+
+    # Fix ownership: container runs as agent (uid 10001)
+    os.system(f"chown -R 10001:10001 {ws_path}")
 
     try:
         container = docker_client.containers.run(
             DOCKER_IMAGE,
-            command="sleep infinity",  # Keep alive, we exec into it
+            command="sleep infinity",
             detach=True,
             name=f"tb-human-{session_id[:16]}",
             volumes={

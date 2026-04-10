@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 
 // Backend URL — Cloudflare tunnel provides HTTPS/WSS for free
-const TUNNEL_HOST = import.meta.env.VITE_BACKEND_HOST || 'xhtml-thanksgiving-gourmet-requires.trycloudflare.com';
+const TUNNEL_HOST = import.meta.env.VITE_BACKEND_HOST || 'abilities-sparc-mediterranean-resource.trycloudflare.com';
 const BACKEND_URL = `wss://${TUNNEL_HOST}`;
 const API_URL = `https://${TUNNEL_HOST}`;
 
 interface TerminalProps {
   sessionId?: string;
   taskId?: string;
+  files?: { path: string; content: string }[];
   disabled?: boolean;
   onCommand?: (cmd: string) => void;
 }
 
-export function Terminal({ sessionId, taskId, disabled, onCommand }: TerminalProps) {
+export function Terminal({ sessionId, taskId, files: initialFiles, disabled, onCommand }: TerminalProps) {
   const termRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'no-session'>('no-session');
@@ -63,9 +64,18 @@ export function Terminal({ sessionId, taskId, disabled, onCommand }: TerminalPro
       term.write('Connecting to sandbox...\r\n');
 
       try {
+        // Send files to backend so they appear in the Docker workspace
+        const fileMap: Record<string, string> = {};
+        if (initialFiles) {
+          for (const f of initialFiles) fileMap[f.path] = f.content;
+        }
         const resp = await fetch(
           `${API_URL}/api/session/${sessionId}/create?task_id=${encodeURIComponent(taskId || 'DEMO_api_fix')}`,
-          { method: 'POST' }
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: fileMap }),
+          }
         );
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 

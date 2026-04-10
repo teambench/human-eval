@@ -117,6 +117,7 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
                 <Terminal
                   sessionId={session.sessionId}
                   taskId={session.taskConfig.taskId}
+                  files={files.map(f => ({ path: f.path, content: f.content }))}
                   disabled={!canEdit}
                   onCommand={cmd => onLog('command_run', { command: cmd })}
                 />
