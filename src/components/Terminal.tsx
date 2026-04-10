@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 // Backend URL — Cloudflare tunnel provides HTTPS/WSS for free
-const TUNNEL_HOST = import.meta.env.VITE_BACKEND_HOST || 'shepherd-align-massive-census.trycloudflare.com';
+const TUNNEL_HOST = import.meta.env.VITE_BACKEND_HOST || 'xhtml-thanksgiving-gourmet-requires.trycloudflare.com';
 const BACKEND_URL = `wss://${TUNNEL_HOST}`;
 const API_URL = `https://${TUNNEL_HOST}`;
 
