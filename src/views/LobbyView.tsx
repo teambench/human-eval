@@ -2,347 +2,513 @@ import { useState, useEffect } from 'react';
 import { ref, onValue } from 'firebase/database';
 import { db } from '../firebase';
 import { Role, SessionMode, TaskConfig } from '../types';
-import { TASK_CATALOG } from '../data/taskCatalog';
+import { TASK_CATALOG, TaskEntry, DEMO_TASK } from '../data/taskCatalog';
+
+// ── Types ──
+export interface UserProfile {
+  name: string;
+  email: string;
+  institution: string;
+  expertise: string;
+  yearsExp: string;
+}
 
 interface LobbyViewProps {
-  onJoin: (task: TaskConfig, role: Role, mode: SessionMode, name: string) => void;
+  onJoin: (task: TaskConfig, role: Role, mode: SessionMode, name: string, profile: UserProfile) => void;
   joining?: boolean;
   waitingForTeam?: boolean;
   waitingSessionId?: string | null;
   participants?: Record<string, { name: string; joinedAt: number }>;
 }
 
-const TEAM_ROLES: { role: Role; label: string; color: string; description: string }[] = [
-  {
-    role: 'planner',
-    label: 'Planner',
-    color: '#6366f1',
-    description: 'Reads the full specification and creates a detailed plan. Cannot edit code or run commands. Sends instructions to the Executor via chat.',
-  },
-  {
-    role: 'executor',
-    label: 'Executor',
-    color: '#f59e0b',
-    description: 'Reads a brief summary and the Planner\'s instructions. Can edit code and run commands. Does NOT see the full specification.',
-  },
-  {
-    role: 'verifier',
-    label: 'Verifier',
-    color: '#10b981',
-    description: 'Reads the full specification and reviews the Executor\'s work. Can pass or fail the submission with feedback.',
-  },
-];
+type Step = 'profile' | 'task' | 'mode' | 'waiting';
 
 const DIFFICULTY_COLORS: Record<string, string> = {
-  easy: '#a6e3a1',
-  medium: '#f9e2af',
-  hard: '#f38ba8',
-  expert: '#cba6f7',
+  easy: '#a6e3a1', medium: '#f9e2af', hard: '#f38ba8', expert: '#cba6f7',
 };
 
-export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, participants }: LobbyViewProps) {
-  const [name, setName] = useState('');
-  const [selectedTask, setSelectedTask] = useState<TaskConfig | null>(null);
-  const [mode, setMode] = useState<SessionMode>('team');
-  const [selectedRole, setSelectedRole] = useState<Role | null>(null);
+const EXPERTISE_OPTIONS = [
+  'Software Engineering',
+  'Machine Learning / AI',
+  'Data Science',
+  'Security / Cryptography',
+  'Systems / Infrastructure',
+  'Full-Stack Development',
+  'Other',
+];
 
-  // Subscribe to Firebase waiting queue to show which roles are taken in real-time
+const TEAM_ROLES: { role: Role; label: string; color: string; icon: string; short: string }[] = [
+  { role: 'planner', label: 'Planner', color: '#6366f1', icon: '\u{1F4CB}', short: 'Read spec, create plan, guide the team' },
+  { role: 'executor', label: 'Executor', color: '#f59e0b', icon: '\u{1F4BB}', short: 'Write code, run commands, implement fixes' },
+  { role: 'verifier', label: 'Verifier', color: '#10b981', icon: '\u{1F50D}', short: 'Review work against spec, pass or fail' },
+];
+
+// ── Main Component ──
+export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, participants }: LobbyViewProps) {
+  const [step, setStep] = useState<Step>('profile');
+  const [profile, setProfile] = useState<UserProfile>({
+    name: '', email: '', institution: '', expertise: '', yearsExp: '',
+  });
+  const [selectedTask, setSelectedTask] = useState<TaskEntry | null>(null);
+  const [mode, setMode] = useState<SessionMode | null>(null);
+  const [selectedRole, setSelectedRole] = useState<Role | null>(null);
   const [waitingRoles, setWaitingRoles] = useState<Record<string, boolean>>({});
+
+  // Subscribe to waiting queue for selected task
   useEffect(() => {
-    if (!selectedTask) return;
+    if (!selectedTask || mode !== 'team') return;
     const waitingRef = ref(db, `teambench/waiting/${selectedTask.taskId}`);
     const unsub = onValue(waitingRef, (snap) => {
-      if (!snap.exists()) {
-        setWaitingRoles({});
-        return;
-      }
+      if (!snap.exists()) { setWaitingRoles({}); return; }
       const data = snap.val() as Record<string, { roles: Record<string, boolean> }>;
-      // Merge all waiting teams' roles to show what's available
       const taken: Record<string, boolean> = {};
       for (const team of Object.values(data)) {
-        if (team.roles) {
-          for (const [role, val] of Object.entries(team.roles)) {
-            if (val) taken[role] = true;
-          }
-        }
+        if (team.roles) for (const [r, v] of Object.entries(team.roles)) if (v) taken[r] = true;
       }
       setWaitingRoles(taken);
     });
     return () => unsub();
-  }, [selectedTask]);
+  }, [selectedTask, mode]);
 
-  // Waiting screen — shown after joining, waiting for teammates
-  if (waitingForTeam && waitingSessionId) {
-    return (
-      <WaitingScreen
-        taskId={selectedTask?.taskId || ''}
-        sessionId={waitingSessionId}
-        participants={participants || {}}
-      />
-    );
+  // Switch to waiting when Firebase says so
+  useEffect(() => {
+    if (waitingForTeam) setStep('waiting');
+  }, [waitingForTeam]);
+
+  const profileValid = profile.name.trim() && profile.email.trim() && profile.expertise;
+
+  const handleJoin = () => {
+    if (!selectedTask || !selectedRole || !profileValid) return;
+    // For now, use DEMO_TASK as the full config (in production, load from backend/generators)
+    const taskConfig: TaskConfig = {
+      ...DEMO_TASK,
+      taskId: selectedTask.taskId,
+      category: selectedTask.category,
+      difficulty: selectedTask.difficulty,
+    };
+    onJoin(taskConfig, selectedRole, mode || 'team', profile.name.trim(), profile);
+  };
+
+  // ── Step: Waiting Room ──
+  if (step === 'waiting' && waitingSessionId) {
+    return <WaitingRoom sessionId={waitingSessionId} participants={participants || {}} taskId={selectedTask?.taskId || ''} />;
   }
 
   return (
-    <div style={{
-      minHeight: '100vh', background: '#11111b', display: 'flex', alignItems: 'center', justifyContent: 'center',
-    }}>
-      <div style={{ maxWidth: 750, width: '100%', padding: 32 }}>
-        {/* Header */}
-        <div style={{ textAlign: 'center', marginBottom: 32 }}>
-          <h1 style={{ color: '#cdd6f4', fontSize: 32, fontWeight: 700, margin: 0 }}>
-            TeamBench
-          </h1>
-          <p style={{ color: '#a6adc8', fontSize: 15, marginTop: 8 }}>
-            Human Team Evaluation Platform
-          </p>
+    <div style={{ minHeight: '100vh', background: '#11111b', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+      {/* Top bar */}
+      <div style={{
+        width: '100%', padding: '16px 24px', borderBottom: '1px solid #222',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 20, fontWeight: 800, color: '#cdd6f4', letterSpacing: -0.5 }}>TeamBench</span>
+          <span style={{ fontSize: 12, color: '#585b70', padding: '2px 8px', background: '#1e1e2e', borderRadius: 4 }}>
+            Human Evaluation
+          </span>
         </div>
+        <StepIndicator current={step} />
+      </div>
 
-        {/* Step 1: Name */}
-        <div style={{ marginBottom: 20 }}>
-          <label style={{ color: '#a6adc8', fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 6 }}>
-            1. Your Name
-          </label>
-          <input
-            value={name}
-            onChange={e => setName(e.target.value)}
-            placeholder="Enter your name..."
-            style={{
-              width: '100%', padding: '10px 14px', background: '#1e1e2e', color: '#cdd6f4',
-              border: '1px solid #555', borderRadius: 6, fontSize: 14, outline: 'none',
-              boxSizing: 'border-box',
-            }}
-          />
-        </div>
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', padding: '24px 16px' }}>
+        <div style={{ maxWidth: 640, width: '100%' }}>
 
-        {/* Step 2: Task selection */}
-        <div style={{ marginBottom: 20 }}>
-          <label style={{ color: '#a6adc8', fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 8 }}>
-            2. Select a Task
-          </label>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {TASK_CATALOG.map(task => (
-              <div
-                key={task.taskId}
-                onClick={() => { setSelectedTask(task); setSelectedRole(null); }}
-                style={{
-                  padding: '12px 16px', background: '#1e1e2e', borderRadius: 8, cursor: 'pointer',
-                  border: `2px solid ${selectedTask?.taskId === task.taskId ? '#89b4fa' : '#333'}`,
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                }}
-              >
-                <div>
-                  <span style={{ color: '#cdd6f4', fontWeight: 600, fontSize: 14 }}>{task.taskId}</span>
-                  <span style={{ color: '#a6adc8', fontSize: 13, marginLeft: 10 }}>{task.category}</span>
+          {/* ── Step 1: Profile ── */}
+          {step === 'profile' && (
+            <FadeIn>
+              <h2 style={{ color: '#cdd6f4', fontSize: 22, fontWeight: 700, margin: '0 0 4px', textAlign: 'center' }}>
+                Welcome, participant
+              </h2>
+              <p style={{ color: '#a6adc8', fontSize: 14, textAlign: 'center', margin: '0 0 28px' }}>
+                Tell us a bit about yourself before we begin.
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <Field label="Name *" value={profile.name} onChange={v => setProfile(p => ({ ...p, name: v }))} placeholder="Jane Doe" />
+                  <Field label="Email *" value={profile.email} onChange={v => setProfile(p => ({ ...p, email: v }))} placeholder="jane@university.edu" type="email" />
                 </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <span style={{
-                    fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
-                    color: '#000', background: DIFFICULTY_COLORS[task.difficulty] || '#888',
-                  }}>
-                    {task.difficulty.toUpperCase()}
-                  </span>
-                  <span style={{ color: '#585b70', fontSize: 12 }}>
-                    {Math.floor(task.timeLimit / 60)}min
-                  </span>
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <Field label="Institution" value={profile.institution} onChange={v => setProfile(p => ({ ...p, institution: v }))} placeholder="University / Company" />
+                  <Field label="Years of experience" value={profile.yearsExp} onChange={v => setProfile(p => ({ ...p, yearsExp: v }))} placeholder="e.g. 3" type="number" />
+                </div>
+                <div>
+                  <label style={{ color: '#a6adc8', fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>
+                    Primary expertise *
+                  </label>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {EXPERTISE_OPTIONS.map(e => (
+                      <button key={e} onClick={() => setProfile(p => ({ ...p, expertise: e }))} style={{
+                        padding: '6px 12px', fontSize: 12, borderRadius: 20, cursor: 'pointer',
+                        background: profile.expertise === e ? '#89b4fa' : '#1e1e2e',
+                        color: profile.expertise === e ? '#000' : '#a6adc8',
+                        border: `1px solid ${profile.expertise === e ? '#89b4fa' : '#333'}`,
+                        fontWeight: profile.expertise === e ? 700 : 400,
+                      }}>
+                        {e}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
 
-        {/* Step 3: Mode selection */}
-        {selectedTask && (
-          <div style={{ marginBottom: 20 }}>
-            <label style={{ color: '#a6adc8', fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 8 }}>
-              3. Select Mode
-            </label>
-            <div style={{ display: 'flex', gap: 10 }}>
               <button
-                onClick={() => { setMode('team'); setSelectedRole(null); }}
+                onClick={() => profileValid && setStep('task')}
+                disabled={!profileValid}
                 style={{
-                  flex: 1, padding: '12px', background: '#1e1e2e', borderRadius: 8, cursor: 'pointer',
-                  border: `2px solid ${mode === 'team' ? '#89b4fa' : '#333'}`, textAlign: 'left',
+                  marginTop: 28, width: '100%', padding: '12px', background: profileValid ? '#89b4fa' : '#333',
+                  color: profileValid ? '#000' : '#666', border: 'none', borderRadius: 8,
+                  fontWeight: 700, fontSize: 15, cursor: profileValid ? 'pointer' : 'not-allowed',
                 }}
               >
-                <div style={{ color: '#cdd6f4', fontWeight: 700, fontSize: 14, marginBottom: 4 }}>
-                  Team (3 people)
-                </div>
-                <div style={{ color: '#a6adc8', fontSize: 12 }}>
-                  Planner + Executor + Verifier with role separation
-                </div>
+                Continue
               </button>
-              <button
-                onClick={() => { setMode('oracle'); setSelectedRole('oracle'); }}
-                style={{
-                  flex: 1, padding: '12px', background: '#1e1e2e', borderRadius: 8, cursor: 'pointer',
-                  border: `2px solid ${mode === 'oracle' ? '#cba6f7' : '#333'}`, textAlign: 'left',
-                }}
-              >
-                <div style={{ color: '#cba6f7', fontWeight: 700, fontSize: 14, marginBottom: 4 }}>
-                  Oracle (solo)
-                </div>
-                <div style={{ color: '#a6adc8', fontSize: 12 }}>
-                  Full access: spec + code editing + verification
-                </div>
-              </button>
-            </div>
-          </div>
-        )}
+            </FadeIn>
+          )}
 
-        {/* Step 4: Role selection (team mode only) */}
-        {selectedTask && mode === 'team' && (
-          <div style={{ marginBottom: 24 }}>
-            <label style={{ color: '#a6adc8', fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 8 }}>
-              4. Select Your Role
-            </label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {TEAM_ROLES.map(r => {
-                const taken = waitingRoles[r.role] === true;
-                return (
-                  <div
-                    key={r.role}
-                    onClick={() => !taken && setSelectedRole(r.role)}
-                    style={{
-                      padding: 14, background: '#1e1e2e', borderRadius: 8,
-                      cursor: taken ? 'not-allowed' : 'pointer',
-                      opacity: taken ? 0.5 : 1,
-                      border: `2px solid ${selectedRole === r.role ? r.color : '#333'}`,
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-                      <span style={{
-                        background: r.color, color: r.role === 'planner' ? '#fff' : '#000',
-                        padding: '2px 10px', borderRadius: 4, fontWeight: 700, fontSize: 12,
-                      }}>
-                        {r.label.toUpperCase()}
-                      </span>
-                      {taken && (
-                        <span style={{ fontSize: 11, color: '#f9e2af', fontWeight: 600 }}>
-                          Teammate waiting — join to pair up!
-                        </span>
-                      )}
+          {/* ── Step 2: Task Selection ── */}
+          {step === 'task' && (
+            <FadeIn>
+              <h2 style={{ color: '#cdd6f4', fontSize: 22, fontWeight: 700, margin: '0 0 4px', textAlign: 'center' }}>
+                Choose your mission
+              </h2>
+              <p style={{ color: '#a6adc8', fontSize: 14, textAlign: 'center', margin: '0 0 20px' }}>
+                Select a software engineering task to solve.
+              </p>
+
+              <div style={{
+                maxHeight: 420, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6,
+                paddingRight: 4,
+              }}>
+                {TASK_CATALOG.map(task => {
+                  const isSelected = selectedTask?.taskId === task.taskId;
+                  return (
+                    <div
+                      key={task.taskId}
+                      onClick={() => setSelectedTask(task)}
+                      style={{
+                        padding: '10px 14px', background: isSelected ? '#1e1e2e' : '#181825',
+                        borderRadius: 8, cursor: 'pointer',
+                        border: `2px solid ${isSelected ? '#89b4fa' : 'transparent'}`,
+                        transition: 'all 0.15s',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{
+                            fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+                            color: '#000', background: DIFFICULTY_COLORS[task.difficulty],
+                          }}>
+                            {task.difficulty.toUpperCase()}
+                          </span>
+                          <span style={{ color: '#cdd6f4', fontWeight: 600, fontSize: 13 }}>{task.taskId}</span>
+                        </div>
+                        <span style={{ color: '#585b70', fontSize: 11 }}>{task.category}</span>
+                      </div>
+                      <p style={{ color: '#a6adc8', fontSize: 12, margin: '4px 0 0', lineHeight: 1.4 }}>
+                        {task.description}
+                      </p>
                     </div>
-                    <p style={{ color: '#a6adc8', fontSize: 13, margin: 0, lineHeight: 1.5 }}>
-                      {r.description}
-                    </p>
+                  );
+                })}
+              </div>
+
+              <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
+                <button onClick={() => setStep('profile')} style={backBtnStyle}>Back</button>
+                <button
+                  onClick={() => selectedTask && setStep('mode')}
+                  disabled={!selectedTask}
+                  style={{
+                    flex: 1, padding: '12px', background: selectedTask ? '#89b4fa' : '#333',
+                    color: selectedTask ? '#000' : '#666', border: 'none', borderRadius: 8,
+                    fontWeight: 700, fontSize: 15, cursor: selectedTask ? 'pointer' : 'not-allowed',
+                  }}
+                >
+                  Continue
+                </button>
+              </div>
+            </FadeIn>
+          )}
+
+          {/* ── Step 3: Mode + Role ── */}
+          {step === 'mode' && (
+            <FadeIn>
+              <h2 style={{ color: '#cdd6f4', fontSize: 22, fontWeight: 700, margin: '0 0 4px', textAlign: 'center' }}>
+                How do you want to play?
+              </h2>
+              <p style={{ color: '#a6adc8', fontSize: 14, textAlign: 'center', margin: '0 0 24px' }}>
+                <span style={{ color: '#89b4fa', fontWeight: 600 }}>{selectedTask?.taskId}</span>
+                {' '}&middot; {selectedTask?.category} &middot;{' '}
+                <span style={{ color: DIFFICULTY_COLORS[selectedTask?.difficulty || 'medium'] }}>
+                  {selectedTask?.difficulty}
+                </span>
+              </p>
+
+              {/* Mode cards */}
+              <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
+                <ModeCard
+                  selected={mode === 'team'}
+                  onClick={() => { setMode('team'); setSelectedRole(null); }}
+                  color="#89b4fa"
+                  title="Team Mode"
+                  subtitle="3 players"
+                  desc="Collaborate with a Planner and Verifier. Each role has different access."
+                />
+                <ModeCard
+                  selected={mode === 'oracle'}
+                  onClick={() => { setMode('oracle'); setSelectedRole('oracle'); }}
+                  color="#cba6f7"
+                  title="Solo Mode"
+                  subtitle="1 player"
+                  desc="Full access to everything. Spec, code, terminal, and verification."
+                />
+              </div>
+
+              {/* Role selection for team mode */}
+              {mode === 'team' && (
+                <div style={{ marginBottom: 16 }}>
+                  <p style={{ color: '#a6adc8', fontSize: 13, fontWeight: 600, margin: '0 0 10px' }}>Pick your role:</p>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    {TEAM_ROLES.map(r => {
+                      const hasWaiting = waitingRoles[r.role];
+                      const isSelected = selectedRole === r.role;
+                      return (
+                        <div
+                          key={r.role}
+                          onClick={() => setSelectedRole(r.role)}
+                          style={{
+                            flex: 1, padding: 12, background: '#181825', borderRadius: 10, cursor: 'pointer',
+                            border: `2px solid ${isSelected ? r.color : 'transparent'}`,
+                            textAlign: 'center', transition: 'all 0.15s',
+                          }}
+                        >
+                          <div style={{ fontSize: 24, marginBottom: 4 }}>{r.icon}</div>
+                          <div style={{
+                            color: r.color, fontWeight: 700, fontSize: 13, marginBottom: 4,
+                          }}>
+                            {r.label}
+                          </div>
+                          <div style={{ color: '#a6adc8', fontSize: 11, lineHeight: 1.4 }}>{r.short}</div>
+                          {hasWaiting && (
+                            <div style={{
+                              marginTop: 6, fontSize: 10, color: '#a6e3a1', fontWeight: 600,
+                              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+                            }}>
+                              <span style={{
+                                width: 6, height: 6, borderRadius: '50%', background: '#a6e3a1',
+                                display: 'inline-block', animation: 'pulse 1.5s infinite',
+                              }} />
+                              Player waiting
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
+                </div>
+              )}
 
-        {/* Join button */}
-        {selectedTask && selectedRole && (
-          <button
-            onClick={() => name.trim() && onJoin(selectedTask, selectedRole, mode, name.trim())}
-            disabled={!name.trim() || joining}
-            style={{
-              width: '100%', padding: '12px 0',
-              background: joining ? '#555'
-                : mode === 'oracle' ? '#cba6f7'
-                : TEAM_ROLES.find(r => r.role === selectedRole)?.color || '#89b4fa',
-              color: selectedRole === 'planner' || mode === 'oracle' ? '#fff' : '#000',
-              border: 'none', borderRadius: 8, fontWeight: 700, fontSize: 15,
-              cursor: name.trim() && !joining ? 'pointer' : 'not-allowed',
-            }}
-          >
-            {joining ? 'Joining...'
-              : mode === 'oracle' ? `Start as Oracle — ${selectedTask.taskId}`
-              : `Join as ${TEAM_ROLES.find(r => r.role === selectedRole)?.label} — ${selectedTask.taskId}`}
-          </button>
-        )}
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button onClick={() => { setStep('task'); setMode(null); setSelectedRole(null); }} style={backBtnStyle}>Back</button>
+                <button
+                  onClick={handleJoin}
+                  disabled={!selectedRole || !mode || joining}
+                  style={{
+                    flex: 1, padding: '12px',
+                    background: !selectedRole || joining ? '#333'
+                      : mode === 'oracle' ? '#cba6f7'
+                      : TEAM_ROLES.find(r => r.role === selectedRole)?.color || '#89b4fa',
+                    color: selectedRole === 'planner' || mode === 'oracle' ? '#fff' : '#000',
+                    border: 'none', borderRadius: 8, fontWeight: 700, fontSize: 15,
+                    cursor: selectedRole && !joining ? 'pointer' : 'not-allowed',
+                  }}
+                >
+                  {joining ? 'Joining...'
+                    : mode === 'oracle' ? 'Start Mission'
+                    : selectedRole ? `Join as ${TEAM_ROLES.find(r => r.role === selectedRole)?.label}` : 'Select a role'}
+                </button>
+              </div>
 
-        <p style={{ color: '#585b70', fontSize: 12, textAlign: 'center', marginTop: 16 }}>
-          <strong>Team mode:</strong> 3 people each open this page and pick different roles. You are auto-matched and the session starts when all roles are filled.
-          <br />
-          <strong>Oracle mode:</strong> One person with full access (spec + editing + verification). Used as the single-agent baseline.
-        </p>
+              <style>{`
+                @keyframes pulse {
+                  0%, 100% { opacity: 1; }
+                  50% { opacity: 0.3; }
+                }
+              `}</style>
+            </FadeIn>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-// ── Waiting Screen (subscribes to Firebase for real-time participant updates) ──
-function WaitingScreen({ taskId, sessionId, participants: initialParticipants }: {
-  taskId: string;
+// ── Waiting Room (game-lobby style) ──
+function WaitingRoom({ sessionId, participants: initialParticipants, taskId }: {
   sessionId: string;
   participants: Record<string, { name: string; joinedAt: number }>;
+  taskId: string;
 }) {
   const [participants, setParticipants] = useState(initialParticipants);
 
   useEffect(() => {
-    const participantsRef = ref(db, `teambench/sessions/${sessionId}/participants`);
-    const unsub = onValue(participantsRef, (snap) => {
+    const unsub = onValue(ref(db, `teambench/sessions/${sessionId}/participants`), (snap) => {
       if (snap.exists()) setParticipants(snap.val());
     });
     return () => unsub();
   }, [sessionId]);
+
+  const count = Object.keys(participants).length;
 
   return (
     <div style={{
       minHeight: '100vh', background: '#11111b', display: 'flex',
       alignItems: 'center', justifyContent: 'center',
     }}>
-      <div style={{ maxWidth: 500, width: '100%', padding: 32, textAlign: 'center' }}>
-        <h1 style={{ color: '#cdd6f4', fontSize: 28, fontWeight: 700, margin: '0 0 8px' }}>
-          Waiting for teammates...
-        </h1>
-        <p style={{ color: '#a6adc8', fontSize: 14, marginBottom: 32 }}>
-          Task: {taskId} &mdash; Session starts automatically when all 3 roles are filled.
+      <div style={{ maxWidth: 440, width: '100%', padding: 32, textAlign: 'center' }}>
+        {/* Animated ring */}
+        <div style={{
+          width: 100, height: 100, margin: '0 auto 24px', borderRadius: '50%',
+          border: '3px solid #333', borderTopColor: '#89b4fa',
+          animation: 'spin 2s linear infinite',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <span style={{ fontSize: 32, fontWeight: 800, color: '#cdd6f4' }}>{count}/3</span>
+        </div>
+
+        <h2 style={{ color: '#cdd6f4', fontSize: 22, fontWeight: 700, margin: '0 0 6px' }}>
+          Assembling your team...
+        </h2>
+        <p style={{ color: '#a6adc8', fontSize: 13, margin: '0 0 28px' }}>
+          Mission: <span style={{ color: '#89b4fa', fontWeight: 600 }}>{taskId}</span>
+          <br />Session starts when all 3 roles are filled.
         </p>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
+        {/* Player slots */}
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
           {TEAM_ROLES.map(r => {
-            const participant = participants[r.role];
-            const isFilled = !!participant;
+            const p = participants[r.role];
+            const filled = !!p;
             return (
               <div key={r.role} style={{
-                padding: '12px 16px', background: '#1e1e2e', borderRadius: 8,
-                border: `2px solid ${isFilled ? r.color : '#333'}`,
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                width: 120, padding: '16px 8px', background: '#181825', borderRadius: 12,
+                border: `2px solid ${filled ? r.color : '#333'}`,
+                textAlign: 'center', transition: 'all 0.3s',
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{
-                    background: isFilled ? r.color : '#313244',
-                    color: isFilled ? (r.role === 'planner' ? '#fff' : '#000') : '#888',
-                    padding: '2px 10px', borderRadius: 4, fontWeight: 700, fontSize: 12,
-                  }}>
-                    {r.label.toUpperCase()}
-                  </span>
-                  {isFilled && (
-                    <span style={{ color: '#cdd6f4', fontSize: 14 }}>{participant.name}</span>
-                  )}
-                </div>
-                <span style={{
-                  fontSize: 12, fontWeight: 600,
-                  color: isFilled ? '#a6e3a1' : '#f9e2af',
+                <div style={{
+                  width: 44, height: 44, borderRadius: '50%', margin: '0 auto 8px',
+                  background: filled ? r.color : '#313244',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 20, transition: 'all 0.3s',
                 }}>
-                  {isFilled ? 'Joined' : 'Waiting...'}
-                </span>
+                  {filled ? r.icon : '?'}
+                </div>
+                <div style={{
+                  fontSize: 12, fontWeight: 700,
+                  color: filled ? r.color : '#585b70',
+                }}>
+                  {r.label}
+                </div>
+                <div style={{
+                  fontSize: 11, marginTop: 4,
+                  color: filled ? '#cdd6f4' : '#585b70',
+                }}>
+                  {filled ? p.name : 'Waiting...'}
+                </div>
               </div>
             );
           })}
         </div>
 
-        <div style={{
-          display: 'inline-flex', alignItems: 'center', gap: 8,
-          color: '#f9e2af', fontSize: 13,
-        }}>
-          <span style={{
-            display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-            background: '#f9e2af', animation: 'pulse 1.5s infinite',
-          }} />
-          {Object.keys(participants).length}/3 teammates joined
-        </div>
+        <p style={{ color: '#585b70', fontSize: 11, marginTop: 24 }}>
+          Share this page with your teammates. They should pick the same task and a different role.
+        </p>
 
         <style>{`
-          @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.3; }
+          @keyframes spin {
+            to { transform: rotate(360deg); }
           }
         `}</style>
       </div>
     </div>
   );
 }
+
+// ── Reusable Components ──
+
+function Field({ label, value, onChange, placeholder, type }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string;
+}) {
+  return (
+    <div style={{ flex: 1 }}>
+      <label style={{ color: '#a6adc8', fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>{label}</label>
+      <input
+        value={value} onChange={e => onChange(e.target.value)}
+        placeholder={placeholder} type={type || 'text'}
+        style={{
+          width: '100%', padding: '9px 12px', background: '#1e1e2e', color: '#cdd6f4',
+          border: '1px solid #333', borderRadius: 6, fontSize: 13, outline: 'none', boxSizing: 'border-box',
+        }}
+      />
+    </div>
+  );
+}
+
+function ModeCard({ selected, onClick, color, title, subtitle, desc }: {
+  selected: boolean; onClick: () => void; color: string; title: string; subtitle: string; desc: string;
+}) {
+  return (
+    <div onClick={onClick} style={{
+      flex: 1, padding: 16, background: '#181825', borderRadius: 12, cursor: 'pointer',
+      border: `2px solid ${selected ? color : 'transparent'}`, textAlign: 'center',
+      transition: 'all 0.15s',
+    }}>
+      <div style={{ fontSize: 18, fontWeight: 800, color: selected ? color : '#cdd6f4', marginBottom: 2 }}>{title}</div>
+      <div style={{ fontSize: 11, color: '#585b70', marginBottom: 8 }}>{subtitle}</div>
+      <div style={{ fontSize: 12, color: '#a6adc8', lineHeight: 1.4 }}>{desc}</div>
+    </div>
+  );
+}
+
+function StepIndicator({ current }: { current: Step }) {
+  const steps: { key: Step; label: string }[] = [
+    { key: 'profile', label: 'Profile' },
+    { key: 'task', label: 'Task' },
+    { key: 'mode', label: 'Mode' },
+  ];
+  const idx = steps.findIndex(s => s.key === current);
+  return (
+    <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+      {steps.map((s, i) => (
+        <div key={s.key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <div style={{
+            width: 22, height: 22, borderRadius: '50%', fontSize: 11, fontWeight: 700,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: i <= idx ? '#89b4fa' : '#313244',
+            color: i <= idx ? '#000' : '#585b70',
+          }}>
+            {i < idx ? '\u2713' : i + 1}
+          </div>
+          <span style={{ fontSize: 11, color: i <= idx ? '#cdd6f4' : '#585b70', fontWeight: i === idx ? 600 : 400 }}>
+            {s.label}
+          </span>
+          {i < steps.length - 1 && (
+            <div style={{ width: 16, height: 1, background: i < idx ? '#89b4fa' : '#333' }} />
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FadeIn({ children }: { children: React.ReactNode }) {
+  return <div style={{ animation: 'fadeIn 0.3s ease' }}>
+    {children}
+    <style>{`@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }`}</style>
+  </div>;
+}
+
+const backBtnStyle: React.CSSProperties = {
+  padding: '12px 20px', background: '#1e1e2e', color: '#a6adc8',
+  border: '1px solid #333', borderRadius: 8, fontWeight: 600, fontSize: 14, cursor: 'pointer',
+};

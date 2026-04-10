@@ -31,7 +31,9 @@ export default function App() {
   if (!role || !task || phase === 'lobby') {
     return (
       <LobbyView
-        onJoin={join}
+        onJoin={(selectedTask, selectedRole, selectedMode, name, profile) =>
+          join(selectedTask, selectedRole, selectedMode, name, profile)
+        }
         joining={joining}
         waitingForTeam={waitingForTeam}
         waitingSessionId={sessionId}
@@ -40,7 +42,6 @@ export default function App() {
     );
   }
 
-  // Build session object for views
   const session = {
     sessionId: sessionId!,
     taskConfig: task,
@@ -48,11 +49,9 @@ export default function App() {
       id: r, name: p.name, role: r as any, joinedAt: p.joinedAt,
     })),
     messages, files, logs: [],
-    phase, startTime, endTime,
-    mode,
+    phase, startTime, endTime, mode,
   };
 
-  // Oracle view — single person, full access
   if (role === 'oracle') {
     return (
       <OracleView
@@ -65,43 +64,24 @@ export default function App() {
     );
   }
 
-  // Team views
   const onSend = (to: any, content: string) => sendMessage(to, content);
 
   switch (role) {
     case 'planner':
       return (
-        <PlannerView
-          session={session}
-          files={files}
-          messages={messages}
-          onSendMessage={onSend}
-          onPhaseChange={setPhase}
-          onLog={addLog}
-        />
+        <PlannerView session={session} files={files} messages={messages}
+          onSendMessage={onSend} onPhaseChange={setPhase} onLog={addLog} />
       );
     case 'executor':
       return (
-        <ExecutorView
-          session={session}
-          files={files}
-          messages={messages}
-          onSendMessage={onSend}
-          onUpdateFile={(path, content) => updateFile(path, content)}
-          onPhaseChange={setPhase}
-          onLog={addLog}
-        />
+        <ExecutorView session={session} files={files} messages={messages}
+          onSendMessage={onSend} onUpdateFile={(p, c) => updateFile(p, c)}
+          onPhaseChange={setPhase} onLog={addLog} />
       );
     case 'verifier':
       return (
-        <VerifierView
-          session={session}
-          files={files}
-          messages={messages}
-          onSendMessage={onSend}
-          onPhaseChange={setPhase}
-          onLog={addLog}
-        />
+        <VerifierView session={session} files={files} messages={messages}
+          onSendMessage={onSend} onPhaseChange={setPhase} onLog={addLog} />
       );
   }
 }
