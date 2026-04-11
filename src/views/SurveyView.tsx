@@ -125,11 +125,55 @@ function LikertScale({ name, value, onChange }: {
   );
 }
 
-export function SurveyView({ sessionId, taskId, role, mode, participants, onComplete }: SurveyViewProps) {
-  // Build list of targets to rate
-  const targets: { id: string; label: string; type: 'peer' | 'self' }[] = [];
+// ── Solo-mode task-level questions (NASA-TLX inspired + counterfactual) ──
+interface SoloItem {
+  id: string;
+  label: string;
+  prompt: string;
+  anchorLow: string;
+  anchorHigh: string;
+}
 
-  if (mode === 'team') {
+const SOLO_TASK_ITEMS: SoloItem[] = [
+  {
+    id: 'difficulty',
+    label: 'Task Difficulty',
+    prompt: 'How difficult was this task overall?',
+    anchorLow: 'Trivial',
+    anchorHigh: 'Extremely hard',
+  },
+  {
+    id: 'mental_effort',
+    label: 'Mental Effort',
+    prompt: 'How much mental effort did this task require?',
+    anchorLow: 'Very little',
+    anchorHigh: 'Maximum effort',
+  },
+  {
+    id: 'time_pressure',
+    label: 'Time Pressure',
+    prompt: 'How rushed did you feel completing this task?',
+    anchorLow: 'No pressure',
+    anchorHigh: 'Extremely rushed',
+  },
+  {
+    id: 'confidence',
+    label: 'Confidence in Solution',
+    prompt: 'How confident are you that your solution is correct?',
+    anchorLow: 'Very unsure',
+    anchorHigh: 'Certain',
+  },
+];
+
+// Counterfactual: would a teammate in this dimension have helped?
+const SOLO_COUNTERFACTUAL_PROMPT = 'On which dimensions would a teammate have been most valuable?';
+
+export function SurveyView({ sessionId, taskId, role, mode, participants, onComplete }: SurveyViewProps) {
+  const isTeam = mode === 'team';
+
+  // ── Team-mode state: peer + self ratings ──
+  const targets: { id: string; label: string; type: 'peer' | 'self' }[] = [];
+  if (isTeam) {
     for (const r of TEAM_ROLES) {
       if (r !== role) {
         const pName = participants[r]?.name;
@@ -140,16 +184,18 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
         });
       }
     }
+    targets.push({
+      id: 'self',
+      label: `${ROLE_LABELS[role]} (yourself)`,
+      type: 'self',
+    });
   }
-  // Self-rating always
-  targets.push({
-    id: 'self',
-    label: mode === 'team' ? `${ROLE_LABELS[role]} (yourself)` : 'Yourself',
-    type: 'self',
-  });
 
-  // State: ratings[targetId][dimId] = 1-5
   const [ratings, setRatings] = useState<Record<string, Record<string, number>>>({});
+  // ── Solo-mode state ──
+  const [taskItems, setTaskItems] = useState<Record<string, number>>({});
+  const [counterfactual, setCounterfactual] = useState<Record<string, number>>({});
+
   const [challenge, setChallenge] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -160,11 +206,16 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
     }));
   };
 
-  // Check if all ratings are filled
-  const totalRequired = targets.length * DIMENSIONS.length;
-  const totalFilled = Object.values(ratings).reduce(
-    (sum, dims) => sum + Object.keys(dims).length, 0
-  );
+  // Validation
+  let totalRequired = 0;
+  let totalFilled = 0;
+  if (isTeam) {
+    totalRequired = targets.length * DIMENSIONS.length;
+    totalFilled = Object.values(ratings).reduce((sum, dims) => sum + Object.keys(dims).length, 0);
+  } else {
+    totalRequired = SOLO_TASK_ITEMS.length + DIMENSIONS.length;
+    totalFilled = Object.keys(taskItems).length + Object.keys(counterfactual).length;
+  }
   const allFilled = totalFilled >= totalRequired;
   const progress = Math.round((totalFilled / totalRequired) * 100);
 
@@ -172,35 +223,40 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
     if (!allFilled || submitting) return;
     setSubmitting(true);
 
-    const peerRatings: Record<string, Record<string, number>> = {};
-    let selfRating: Record<string, number> = {};
-
-    for (const [targetId, dims] of Object.entries(ratings)) {
-      if (targetId === 'self') {
-        selfRating = dims;
-      } else {
-        peerRatings[targetId] = dims;
+    let surveyData: Record<string, unknown>;
+    if (isTeam) {
+      const peerRatings: Record<string, Record<string, number>> = {};
+      let selfRating: Record<string, number> = {};
+      for (const [targetId, dims] of Object.entries(ratings)) {
+        if (targetId === 'self') selfRating = dims;
+        else peerRatings[targetId] = dims;
       }
+      surveyData = {
+        schema_version: '1.1',
+        instrument: 'CATME-lite',
+        reference: 'Ohland et al. (2012) Academy of Management Learning & Education 11(4)',
+        timestamp: Date.now(),
+        timestampISO: new Date().toISOString(),
+        sessionId, taskId, mode,
+        respondentRole: role,
+        peerRatings, selfRating,
+        openEnded: { collaborationChallenge: challenge },
+      };
+    } else {
+      surveyData = {
+        schema_version: '1.1',
+        instrument: 'TeamBench-Solo-Reflection',
+        reference: 'NASA-TLX (Hart & Staveland, 1988) + CATME counterfactual',
+        timestamp: Date.now(),
+        timestampISO: new Date().toISOString(),
+        sessionId, taskId, mode,
+        respondentRole: role,
+        taskExperience: taskItems,                  // difficulty/effort/pressure/confidence
+        counterfactualTeamValue: counterfactual,    // CATME dims rated as "would have helped"
+        openEnded: { collaborationChallenge: challenge },
+      };
     }
 
-    const surveyData = {
-      schema_version: '1.0',
-      instrument: 'CATME-lite',
-      reference: 'Ohland et al. (2012) Academy of Management Learning & Education 11(4)',
-      timestamp: Date.now(),
-      timestampISO: new Date().toISOString(),
-      sessionId,
-      taskId,
-      mode,
-      respondentRole: role,
-      peerRatings,
-      selfRating,
-      openEnded: {
-        collaborationChallenge: challenge,
-      },
-    };
-
-    // Store in Firebase
     try {
       await set(ref(db, `teambench/sessions/${sessionId}/survey/${role}`), surveyData);
     } catch (err) {
@@ -220,13 +276,15 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
         {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
           <h1 style={{ color: '#cdd6f4', fontSize: 24, fontWeight: 700, margin: '0 0 4px' }}>
-            Teamwork Effectiveness Survey
+            {isTeam ? 'Teamwork Effectiveness Survey' : 'Post-Task Reflection'}
           </h1>
           <p style={{ color: '#585b70', fontSize: 13, margin: '0 0 4px' }}>
             {taskId} &middot; Your role: {ROLE_LABELS[role]}
           </p>
           <p style={{ color: '#6c7086', fontSize: 12 }}>
-            Based on CATME BARS (Ohland et al., 2012) &middot; ~3 minutes
+            {isTeam
+              ? 'Based on CATME BARS (Ohland et al., 2012) · ~3 minutes'
+              : 'Task experience + counterfactual team value · ~3 minutes'}
           </p>
         </div>
 
@@ -248,13 +306,115 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
           borderRadius: 8, padding: '10px 14px', marginBottom: 24,
           fontSize: 13, color: '#a6adc8',
         }}>
-          <strong style={{ color: '#6366f1' }}>Instructions:</strong> Rate each team member on five
-          dimensions of teamwork effectiveness. Please complete this survey immediately &mdash; your
-          impressions are most accurate right after the task.
+          <strong style={{ color: '#6366f1' }}>Instructions:</strong>{' '}
+          {isTeam
+            ? 'Rate each team member on five dimensions of teamwork effectiveness. Please complete this survey immediately — your impressions are most accurate right after the task.'
+            : 'Rate your task experience, then indicate which team-effectiveness dimensions a teammate would have helped on. Please complete immediately — your impressions are most accurate right after the task.'}
         </div>
 
-        {/* Rating sections */}
-        {targets.map(target => (
+        {/* ── Solo: task experience block ── */}
+        {!isTeam && (
+          <div style={{
+            background: '#1e1e2e', border: '1px solid #313244',
+            borderRadius: 12, padding: 20, marginBottom: 16,
+          }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16,
+            }}>
+              <span style={{
+                fontSize: 11, fontWeight: 700, padding: '3px 8px',
+                borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.05em',
+                background: 'rgba(203, 166, 247, 0.15)', color: '#cba6f7',
+              }}>
+                Task Experience
+              </span>
+              <span style={{ fontSize: 13, color: '#6c7086' }}>
+                Rate your experience completing this task alone
+              </span>
+            </div>
+            {SOLO_TASK_ITEMS.map((item, i) => (
+              <div key={item.id} style={{
+                paddingBottom: i < SOLO_TASK_ITEMS.length - 1 ? 16 : 0,
+                marginBottom: i < SOLO_TASK_ITEMS.length - 1 ? 16 : 0,
+                borderBottom: i < SOLO_TASK_ITEMS.length - 1 ? '1px solid #313244' : 'none',
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4', marginBottom: 2 }}>
+                  {item.label}
+                </div>
+                <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 8 }}>
+                  {item.prompt}
+                </div>
+                <LikertScale
+                  name={`task_${item.id}`}
+                  value={taskItems[item.id] ?? null}
+                  onChange={v => setTaskItems(prev => ({ ...prev, [item.id]: v }))}
+                />
+                <div style={{
+                  display: 'flex', justifyContent: 'space-between',
+                  fontSize: 10, color: '#45475a', marginTop: 2, padding: '0 4px',
+                }}>
+                  <span>{item.anchorLow}</span>
+                  <span>{item.anchorHigh}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── Solo: counterfactual "would teamwork have helped?" ── */}
+        {!isTeam && (
+          <div style={{
+            background: '#1e1e2e', border: '1px solid #313244',
+            borderRadius: 12, padding: 20, marginBottom: 16,
+          }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6,
+            }}>
+              <span style={{
+                fontSize: 11, fontWeight: 700, padding: '3px 8px',
+                borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.05em',
+                background: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b',
+              }}>
+                Counterfactual
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4' }}>
+                {SOLO_COUNTERFACTUAL_PROMPT}
+              </span>
+            </div>
+            <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 16 }}>
+              For each dimension, rate how much a teammate would have helped (1 = not at all, 5 = a great deal).
+            </div>
+            {DIMENSIONS.map((dim, i) => (
+              <div key={dim.id} style={{
+                paddingBottom: i < DIMENSIONS.length - 1 ? 16 : 0,
+                marginBottom: i < DIMENSIONS.length - 1 ? 16 : 0,
+                borderBottom: i < DIMENSIONS.length - 1 ? '1px solid #313244' : 'none',
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4', marginBottom: 2 }}>
+                  {dim.label}
+                </div>
+                <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 8 }}>
+                  A teammate focused on "{dim.label.toLowerCase()}" would have helped me...
+                </div>
+                <LikertScale
+                  name={`counterfactual_${dim.id}`}
+                  value={counterfactual[dim.id] ?? null}
+                  onChange={v => setCounterfactual(prev => ({ ...prev, [dim.id]: v }))}
+                />
+                <div style={{
+                  display: 'flex', justifyContent: 'space-between',
+                  fontSize: 10, color: '#45475a', marginTop: 2, padding: '0 4px',
+                }}>
+                  <span>Not at all</span>
+                  <span>A great deal</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── Team: peer + self rating sections ── */}
+        {isTeam && targets.map(target => (
           <div key={target.id} style={{
             background: '#1e1e2e', border: '1px solid #313244',
             borderRadius: 12, padding: 20, marginBottom: 16,
@@ -315,7 +475,9 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
             Open-Ended Feedback
           </div>
           <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 10 }}>
-            What was the most challenging part of collaborating on this task?
+            {isTeam
+              ? 'What was the most challenging part of collaborating on this task?'
+              : 'What was the most challenging part of working on this task alone?'}
           </div>
           <textarea
             value={challenge}

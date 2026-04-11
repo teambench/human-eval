@@ -156,18 +156,41 @@ export function useFirebaseSession() {
     setFiles(selectedTask.files.map(f => ({ ...f })));
 
     try {
+      // Resume an in-progress session ONLY if:
+      //   (a) it was saved within the last 30 minutes (matches task timeLimit),
+      //   (b) it still exists in Firebase,
+      //   (c) it is not completed/cancelled,
+      //   (d) the user's role is still listed in participants (not stolen by someone else),
+      //   (e) for team mode: the team is past lobby (otherwise we should rejoin the waiting room).
+      // Otherwise, drop the stale localStorage entry and start fresh.
+      const RESUME_TTL_MS = 30 * 60 * 1000;
       const storageKey = `teambench_session_${selectedTask.taskId}_${selectedRole}_${selectedMode}`;
       const saved = localStorage.getItem(storageKey);
       if (saved) {
-        const { sessionId: savedId } = JSON.parse(saved);
-        const snap = await get(ref(db, `teambench/sessions/${savedId}`));
-        if (snap.exists() && snap.val().phase !== 'completed') {
-          setSessionId(savedId);
-          setRole(selectedRole);
-          addLog(savedId, selectedRole, 'resume', { name });
-          setJoining(false);
-          return;
+        try {
+          const parsed = JSON.parse(saved) as { sessionId: string; savedAt?: number };
+          const savedAt = parsed.savedAt ?? 0;
+          const fresh = Date.now() - savedAt < RESUME_TTL_MS;
+          if (fresh) {
+            const snap = await get(ref(db, `teambench/sessions/${parsed.sessionId}`));
+            if (snap.exists()) {
+              const data = snap.val();
+              const phaseOk = data.phase && data.phase !== 'completed' && data.phase !== 'cancelled';
+              const myRoleStillMine = !!data.participants?.[selectedRole];
+              if (phaseOk && myRoleStillMine) {
+                setSessionId(parsed.sessionId);
+                setRole(selectedRole);
+                addLog(parsed.sessionId, selectedRole, 'resume', { name });
+                setJoining(false);
+                return;
+              }
+            }
+          }
+        } catch {
+          // fall through and clear
         }
+        // Stale or invalid — drop it so we don't resume into a stranger's session.
+        localStorage.removeItem(storageKey);
       }
 
       let newSessionId: string;
@@ -185,7 +208,7 @@ export function useFirebaseSession() {
 
       setSessionId(newSessionId);
       setRole(selectedRole);
-      localStorage.setItem(storageKey, JSON.stringify({ sessionId: newSessionId }));
+      localStorage.setItem(storageKey, JSON.stringify({ sessionId: newSessionId, savedAt: Date.now() }));
 
       if (isNew) {
         const filesData: Record<string, { content: string; language: string }> = {};

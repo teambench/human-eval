@@ -10,6 +10,7 @@ Run: uvicorn server:app --host 0.0.0.0 --port 8443
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -117,12 +118,20 @@ async def create_session(session_id: str, task_id: str = "DEMO_api_fix", body: C
         for fname in fnames:
             os.chmod(os.path.join(root, fname), 0o666)
 
+    # Use a short hash of the full session_id to guarantee uniqueness while
+    # keeping container names within Docker's 64-char limit. The previous
+    # session_id[:16] truncation caused collisions for sessions sharing a
+    # common task prefix (e.g. all "SEC3_crypto_upgrade_oracle_*" sessions
+    # collapsed to "SEC3_crypto_upgr").
+    session_hash = hashlib.sha256(session_id.encode()).hexdigest()[:12]
+    container_name = f"tb-human-{session_hash}"
+
     try:
         container = docker_client.containers.run(
             DOCKER_IMAGE,
             command="sleep infinity",
             detach=True,
-            name=f"tb-human-{session_id[:16]}",
+            name=container_name,
             volumes={
                 ws_path: {"bind": "/workspace", "mode": "rw"},
             },
@@ -133,8 +142,36 @@ async def create_session(session_id: str, task_id: str = "DEMO_api_fix", body: C
             network_mode="bridge",
             remove=False,
         )
+    except docker.errors.APIError as e:
+        # Defensive: if a stale container with this name still exists, remove it and retry once.
+        if "Conflict" in str(e) or "already in use" in str(e):
+            try:
+                old = docker_client.containers.get(container_name)
+                old.remove(force=True)
+                container = docker_client.containers.run(
+                    DOCKER_IMAGE,
+                    command="sleep infinity",
+                    detach=True,
+                    name=container_name,
+                    volumes={ws_path: {"bind": "/workspace", "mode": "rw"}},
+                    working_dir="/workspace",
+                    mem_limit="512m",
+                    cpu_period=100000,
+                    cpu_quota=50000,
+                    network_mode="bridge",
+                    remove=False,
+                )
+            except Exception as retry_err:
+                shutil.rmtree(workspace_dir, ignore_errors=True)
+                print(f"[create_session] Container conflict retry failed: {retry_err}")
+                raise HTTPException(500, f"Failed to create container: {retry_err}")
+        else:
+            shutil.rmtree(workspace_dir, ignore_errors=True)
+            print(f"[create_session] Docker API error: {e}")
+            raise HTTPException(500, f"Failed to create container: {e}")
     except Exception as e:
         shutil.rmtree(workspace_dir, ignore_errors=True)
+        print(f"[create_session] Unexpected error: {e}")
         raise HTTPException(500, f"Failed to create container: {e}")
 
     sessions[session_id] = {
