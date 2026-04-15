@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -35,13 +36,190 @@ app.add_middleware(
 
 # Config
 TEAMBENCH_ROOT = os.environ.get("TEAMBENCH_ROOT", "/u/ybkim95/TeamBench")
-DOCKER_IMAGE = os.environ.get("DOCKER_IMAGE", "teambench-executor")
+DOCKER_IMAGE = os.environ.get("DOCKER_IMAGE", "teambench-executor:human")
 MAX_CONTAINERS = int(os.environ.get("MAX_CONTAINERS", "20"))
 CONTAINER_TIMEOUT = int(os.environ.get("CONTAINER_TIMEOUT", "3600"))  # 1 hour
+DEFAULT_SEED = int(os.environ.get("HUMAN_EVAL_SEED", "0"))
+
+# Make TeamBench generators importable from the backend process.
+if TEAMBENCH_ROOT not in sys.path:
+    sys.path.insert(0, TEAMBENCH_ROOT)
 
 # Active sessions: sessionId -> container info
 sessions: dict[str, dict] = {}
 docker_client = docker.from_env()
+
+
+_CONFTEST_SRC = (
+    "import os, sys\n"
+    "sys.path.insert(0, os.path.dirname(__file__))\n"
+)
+
+
+def _resolve_task_dir(task_id: str, seed: int) -> Optional[Path]:
+    """
+    Resolve the on-disk task definition dir. RDS-style tasks use
+    tasks/{task_id}_seed{seed}/; others use tasks/{task_id}/.
+    Returns None if neither exists.
+    """
+    root = Path(TEAMBENCH_ROOT) / "tasks"
+    candidates = [root / task_id, root / f"{task_id}_seed{seed}"]
+    for c in candidates:
+        if c.is_dir():
+            return c
+    return None
+
+
+def _stage_task_workspace(task_id: str, workspace_dir: str, seed: int = DEFAULT_SEED) -> dict:
+    """
+    Stage a task's workspace, reports, and submission directories.
+
+    Layout produced under `workspace_dir/`:
+      workspace/   — mounted to /workspace (rw, visible to human)
+      reports/     — mounted to /reports (rw, grader-only: expected.json + score.json)
+      submission/  — mounted to /submission (rw, for attestation.json)
+
+    Source priority (last writer wins):
+      1. Static tasks/{task_id}/workspace/  copytree
+      2. Generator's workspace_files         overlay
+      3. Frontend-provided files             overlay (applied by caller)
+    """
+    ws_path = os.path.join(workspace_dir, "workspace")
+    reports_path = os.path.join(workspace_dir, "reports")
+    submission_path = os.path.join(workspace_dir, "submission")
+    os.makedirs(ws_path, exist_ok=True)
+    os.makedirs(reports_path, exist_ok=True)
+    os.makedirs(submission_path, exist_ok=True)
+
+    info = {
+        "generator_found": False, "static_workspace_used": False,
+        "files_written": 0, "task_dir_abs": "", "task_dir_resolved": "",
+        "grade_sh": "", "setup_sh": "", "expected_written": False,
+        "brief": "", "spec": "",
+    }
+
+    task_dir = _resolve_task_dir(task_id, seed)
+    if task_dir:
+        info["task_dir_abs"] = str(Path(TEAMBENCH_ROOT) / "tasks" / task_id)
+        info["task_dir_resolved"] = str(task_dir)
+        # 1) Static workspace (some tasks ship pre-generated files).
+        static_ws = task_dir / "workspace"
+        if static_ws.is_dir():
+            shutil.copytree(static_ws, ws_path, dirs_exist_ok=True)
+            info["static_workspace_used"] = True
+        # Static reports (expected.json for RDS-style and some others).
+        static_reports = task_dir / "reports"
+        if static_reports.is_dir():
+            shutil.copytree(static_reports, reports_path, dirs_exist_ok=True)
+            if (Path(reports_path) / "expected.json").is_file():
+                info["expected_written"] = True
+        # Grader + setup paths.
+        if (task_dir / "grade.sh").is_file():
+            info["grade_sh"] = str(task_dir / "grade.sh")
+        if (task_dir / "setup.sh").is_file():
+            info["setup_sh"] = str(task_dir / "setup.sh")
+        # Task brief / spec for in-workspace display.
+        for name in ("brief.md", "spec.md"):
+            p = task_dir / name
+            if p.is_file():
+                info[name.split(".")[0]] = p.read_text()
+
+    # 2) Generator overlay (may supersede static files with seed-parameterized content).
+    try:
+        from generators.registry import get_generator
+        gen = get_generator(task_id)
+        generated = gen.generate(seed)
+        info["generator_found"] = True
+        if not info["brief"]:
+            info["brief"] = getattr(generated, "brief_md", "") or ""
+        if not info["spec"]:
+            info["spec"] = getattr(generated, "spec_md", "") or ""
+
+        for rel_path, content in (generated.workspace_files or {}).items():
+            safe_rel = os.path.normpath(rel_path).lstrip(os.sep)
+            if safe_rel.startswith(".."):
+                continue
+            abs_path = os.path.join(ws_path, safe_rel)
+            real = os.path.realpath(abs_path)
+            if not real.startswith(os.path.realpath(ws_path)):
+                continue
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+            mode = "wb" if isinstance(content, (bytes, bytearray)) else "w"
+            with open(abs_path, mode) as f:
+                f.write(content)
+            info["files_written"] += 1
+
+        for rel_path, content in (generated.corpus_files or {}).items():
+            safe_rel = os.path.normpath(rel_path).lstrip(os.sep)
+            if safe_rel.startswith(".."):
+                continue
+            abs_path = os.path.join(ws_path, "corpus", safe_rel)
+            real = os.path.realpath(abs_path)
+            if not real.startswith(os.path.realpath(ws_path)):
+                continue
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+            with open(abs_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            info["files_written"] += 1
+
+        # Write expected.json from the generator (ground truth).
+        if getattr(generated, "expected", None) is not None:
+            with open(os.path.join(reports_path, "expected.json"), "w") as f:
+                json.dump(generated.expected, f, indent=2)
+            info["expected_written"] = True
+    except KeyError:
+        pass  # No generator (e.g., GH103_redis-py_3998 — static only).
+    except Exception as e:
+        print(f"[stage] generator {task_id} failed: {e}")
+
+    # 3) Helper artefacts inside the workspace.
+    if info["brief"]:
+        with open(os.path.join(ws_path, "brief.md"), "w") as f:
+            f.write(info["brief"])
+    readme_human = (
+        "# Human Evaluation Workspace\n\n"
+        f"Task: **{task_id}** (seed {seed})\n\n"
+        "Read `brief.md` for the task description.\n\n"
+        "## Running tests\n"
+        "`pytest -x` (PYTHONPATH already includes /workspace via conftest.py).\n\n"
+        "## Grading\n"
+        "Use the web UI's **Grade** button — it runs the task's grade.sh and returns the score.\n"
+    )
+    with open(os.path.join(ws_path, "README_HUMAN.md"), "w") as f:
+        f.write(readme_human)
+
+    # Pre-seed attestation so grade.sh doesn't trivially fail on the "verdict=pass"
+    # check. Humans aren't required to attest; the grader's other checks remain the
+    # real signal. The workspace is world-writable so the human can overwrite this.
+    attest_path = os.path.join(submission_path, "attestation.json")
+    with open(attest_path, "w") as f:
+        json.dump({"verdict": "pass", "source": "human_eval_default"}, f)
+
+    return info
+
+
+def _ensure_conftest(ws_path: str) -> None:
+    """Drop a root conftest.py so pytest discovers src/, app.py, etc."""
+    conftest = os.path.join(ws_path, "conftest.py")
+    if not os.path.exists(conftest):
+        with open(conftest, "w") as f:
+            f.write(_CONFTEST_SRC)
+
+
+def _chmod_recursive(path: str) -> None:
+    """Make workspace world-writable so container uid 10001 can edit."""
+    os.chmod(path, 0o777)
+    for root, dirs, fnames in os.walk(path):
+        for d in dirs:
+            try:
+                os.chmod(os.path.join(root, d), 0o777)
+            except OSError:
+                pass
+        for fname in fnames:
+            try:
+                os.chmod(os.path.join(root, fname), 0o666)
+            except OSError:
+                pass
 
 
 def get_session(session_id: str) -> Optional[dict]:
@@ -86,21 +264,17 @@ async def create_session(session_id: str, task_id: str = "DEMO_api_fix", body: C
     if session_id in sessions:
         return {"status": "exists", "session_id": session_id}
 
-    # Create a temporary workspace directory
+    # Create a temporary workspace directory (workspace/, reports/, submission/).
     workspace_dir = tempfile.mkdtemp(prefix=f"tb_{session_id}_")
     ws_path = os.path.join(workspace_dir, "workspace")
-    os.makedirs(ws_path, exist_ok=True)
+    reports_path = os.path.join(workspace_dir, "reports")
+    submission_path = os.path.join(workspace_dir, "submission")
 
-    # Check if task has generated files (from generator or static)
-    task_dir = Path(TEAMBENCH_ROOT) / "tasks" / task_id
-    if task_dir.exists():
-        static_workspace = task_dir / "workspace"
-        if static_workspace.exists():
-            shutil.copytree(static_workspace, ws_path, dirs_exist_ok=True)
+    # 1) Stage static workspace + generator overlay + reports/expected.json.
+    stage_info = _stage_task_workspace(task_id, workspace_dir, seed=DEFAULT_SEED)
 
-    # Write files sent from the frontend (Monaco editor contents)
+    # 2) Apply frontend-provided overrides (Monaco edits or DEMO_api_fix files).
     for file_path, content in body.files.items():
-        # Security: prevent path traversal
         safe_path = os.path.normpath(file_path).lstrip("/").lstrip("../")
         full_path = os.path.join(ws_path, safe_path)
         real_path = os.path.realpath(full_path)
@@ -110,13 +284,12 @@ async def create_session(session_id: str, task_id: str = "DEMO_api_fix", body: C
         with open(full_path, "w") as f:
             f.write(content)
 
-    # Make workspace world-writable so container agent (uid 10001) can access
-    os.chmod(ws_path, 0o777)
-    for root, dirs, fnames in os.walk(ws_path):
-        for d in dirs:
-            os.chmod(os.path.join(root, d), 0o777)
-        for fname in fnames:
-            os.chmod(os.path.join(root, fname), 0o666)
+    # 3) Ensure pytest can import root-level modules (src/, app.py, ...).
+    _ensure_conftest(ws_path)
+
+    # 4) Make everything world-writable so container uid 10001 can edit.
+    for p in (ws_path, reports_path, submission_path):
+        _chmod_recursive(p)
 
     # Use a short hash of the full session_id to guarantee uniqueness while
     # keeping container names within Docker's 64-char limit. The previous
@@ -126,41 +299,36 @@ async def create_session(session_id: str, task_id: str = "DEMO_api_fix", body: C
     session_hash = hashlib.sha256(session_id.encode()).hexdigest()[:12]
     container_name = f"tb-human-{session_hash}"
 
+    container_env = {"PYTHONPATH": "/workspace", "PYTHONDONTWRITEBYTECODE": "1"}
+
+    container_volumes = {
+        ws_path: {"bind": "/workspace", "mode": "rw"},
+        reports_path: {"bind": "/reports", "mode": "rw"},
+        submission_path: {"bind": "/submission", "mode": "rw"},
+    }
+    container_kwargs = dict(
+        command="sleep infinity",
+        detach=True,
+        name=container_name,
+        volumes=container_volumes,
+        working_dir="/workspace",
+        environment=container_env,
+        mem_limit="1g",
+        cpu_period=100000,
+        cpu_quota=100000,  # 1.0 CPU
+        network_mode="bridge",
+        remove=False,
+    )
+
     try:
-        container = docker_client.containers.run(
-            DOCKER_IMAGE,
-            command="sleep infinity",
-            detach=True,
-            name=container_name,
-            volumes={
-                ws_path: {"bind": "/workspace", "mode": "rw"},
-            },
-            working_dir="/workspace",
-            mem_limit="512m",
-            cpu_period=100000,
-            cpu_quota=50000,  # 0.5 CPU
-            network_mode="bridge",
-            remove=False,
-        )
+        container = docker_client.containers.run(DOCKER_IMAGE, **container_kwargs)
     except docker.errors.APIError as e:
         # Defensive: if a stale container with this name still exists, remove it and retry once.
         if "Conflict" in str(e) or "already in use" in str(e):
             try:
                 old = docker_client.containers.get(container_name)
                 old.remove(force=True)
-                container = docker_client.containers.run(
-                    DOCKER_IMAGE,
-                    command="sleep infinity",
-                    detach=True,
-                    name=container_name,
-                    volumes={ws_path: {"bind": "/workspace", "mode": "rw"}},
-                    working_dir="/workspace",
-                    mem_limit="512m",
-                    cpu_period=100000,
-                    cpu_quota=50000,
-                    network_mode="bridge",
-                    remove=False,
-                )
+                container = docker_client.containers.run(DOCKER_IMAGE, **container_kwargs)
             except Exception as retry_err:
                 shutil.rmtree(workspace_dir, ignore_errors=True)
                 print(f"[create_session] Container conflict retry failed: {retry_err}")
@@ -177,11 +345,56 @@ async def create_session(session_id: str, task_id: str = "DEMO_api_fix", body: C
     sessions[session_id] = {
         "container_id": container.id,
         "workspace_dir": workspace_dir,
+        "ws_path": ws_path,
+        "reports_path": reports_path,
+        "submission_path": submission_path,
         "task_id": task_id,
+        "task_dir_resolved": stage_info.get("task_dir_resolved", ""),
+        "grade_sh_path": stage_info.get("grade_sh", ""),
         "created_at": time.time(),
     }
 
-    return {"status": "created", "session_id": session_id, "container_id": container.short_id}
+    # Run the task's setup.sh (installs task-specific deps like flask, pytest-flask).
+    setup_output = ""
+    if stage_info.get("setup_sh"):
+        try:
+            setup_src = stage_info["setup_sh"]
+            with open(setup_src, "rb") as f:
+                setup_bytes = f.read()
+            import tarfile, io
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tar:
+                ti = tarfile.TarInfo(name="setup.sh")
+                ti.size = len(setup_bytes)
+                ti.mode = 0o755
+                tar.addfile(ti, io.BytesIO(setup_bytes))
+            buf.seek(0)
+            container.put_archive("/tmp", buf.read())
+            # Run setup.sh from /tmp (not /workspace) so any stray shell
+            # redirects don't pollute the user-visible workspace.
+            r = container.exec_run(
+                ["bash", "-c", "bash /tmp/setup.sh"],
+                environment=container_env,
+                workdir="/tmp",
+                user="root",  # pip install may need root; base image USER=agent
+            )
+            setup_output = r.output.decode("utf-8", errors="replace")[-500:]
+        except Exception as e:
+            setup_output = f"setup.sh failed: {e}"
+            print(f"[create_session] {setup_output}")
+
+    return {
+        "status": "created",
+        "session_id": session_id,
+        "container_id": container.short_id,
+        "staged_from_generator": stage_info.get("generator_found", False),
+        "files_staged": stage_info.get("files_written", 0),
+        "setup_ran": bool(stage_info.get("setup_sh")),
+        "setup_tail": setup_output,
+        "static_workspace_used": stage_info.get("static_workspace_used", False),
+        "has_grader": bool(stage_info.get("grade_sh")),
+        "expected_written": stage_info.get("expected_written", False),
+    }
 
 
 @app.post("/api/session/{session_id}/write-file")
@@ -208,45 +421,136 @@ async def write_file(session_id: str, path: str, content: str):
 
 @app.post("/api/session/{session_id}/grade")
 async def grade_session(session_id: str):
-    """Run grade.sh for the session's task."""
+    """
+    Run the task's grade.sh inside the container with the canonical 4-arg
+    signature: grade.sh /workspace /reports /submission /task
+
+    The grader writes score.json to /reports. We read it back from the host.
+    """
     session = get_session(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
 
-    task_id = session["task_id"]
-    task_dir = Path(TEAMBENCH_ROOT) / "tasks" / task_id
-    grade_script = task_dir / "grade.sh"
-
-    if not grade_script.exists():
-        return {"status": "no_grader", "message": f"No grade.sh for {task_id}"}
-
-    ws_path = os.path.join(session["workspace_dir"], "workspace")
+    grade_sh = session.get("grade_sh_path") or ""
+    task_dir_resolved = session.get("task_dir_resolved") or ""
+    if not grade_sh or not os.path.isfile(grade_sh) or not task_dir_resolved:
+        return {"status": "no_grader",
+                "message": f"No grade.sh resolved for {session['task_id']}"}
 
     try:
         container = docker_client.containers.get(session["container_id"])
-        # Copy grade.sh into container and run
+
+        # Copy the full task_dir into /task in the container, plus the shared
+        # harness/grader_helpers.sh into /harness (some graders `source
+        # $(dirname "$0")/../../harness/grader_helpers.sh`). Tar on host, then
+        # put_archive into / so /task and /harness appear at the container root.
+        #
+        # 634+ GH* task graders are committed with a uniform 8-space leading
+        # indent (template artefact). Heredoc closers like `PYEOF` are indented
+        # too, which breaks `<<'PYEOF'` (no `-`), causing bash to swallow the
+        # rest of the script as heredoc content and exit 2. textwrap.dedent
+        # normalizes this transparently before tarring into the container.
+        import tarfile, io, re
+        def _dedent_bytes(p: Path) -> bytes:
+            """
+            Strip a uniform leading indent applied to shell scripts.
+
+            textwrap.dedent doesn't work here: the GH* graders have some lines
+            at column 0 (e.g. trailing `# TODO:` comments) while the rest have
+            8-space indent, so the *common* prefix is 0. We detect the indent
+            from the shebang line and strip exactly that many leading spaces
+            from every line.
+            """
+            try:
+                text = p.read_text()
+                m = re.match(r'^( +)#!', text)
+                if m:
+                    indent = m.group(1)
+                    text = re.sub(
+                        rf'^{re.escape(indent)}', '', text, flags=re.MULTILINE)
+                # Many GH* graders use `set -euo pipefail` but then do
+                # `var=$(cmd_that_can_fail)` without guarding — which trips
+                # errexit and silently exits 2. Drop -e so the explicit
+                # `check` calls determine pass/fail instead of hidden
+                # mid-stream failures. Pipefail + nounset still apply.
+                text = re.sub(
+                    r'^(\s*)set\s+-euo\s+pipefail\s*$',
+                    r'\1set -uo pipefail',
+                    text, flags=re.MULTILINE)
+                text = re.sub(
+                    r'^(\s*)set\s+-eu\s*$', r'\1set -u',
+                    text, flags=re.MULTILINE)
+                return text.encode()
+            except Exception:
+                return p.read_bytes()
+
+        buf = io.BytesIO()
+        task_root = Path(task_dir_resolved)
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            # Add every file under task_dir, dedenting shell scripts.
+            for fp in task_root.rglob("*"):
+                if not fp.is_file():
+                    continue
+                arc = "task/" + str(fp.relative_to(task_root)).replace(os.sep, "/")
+                if fp.suffix == ".sh":
+                    data = _dedent_bytes(fp)
+                else:
+                    data = fp.read_bytes()
+                info = tarfile.TarInfo(name=arc)
+                info.size = len(data)
+                info.mode = 0o755 if fp.suffix == ".sh" else 0o644
+                tar.addfile(info, io.BytesIO(data))
+
+            helper = Path(TEAMBENCH_ROOT) / "harness" / "grader_helpers.sh"
+            if helper.is_file():
+                data = _dedent_bytes(helper)
+                info = tarfile.TarInfo(name="harness/grader_helpers.sh")
+                info.size = len(data)
+                info.mode = 0o755
+                tar.addfile(info, io.BytesIO(data))
+        buf.seek(0)
+        try:
+            container.exec_run(["rm", "-rf", "/task", "/harness"], user="root")
+        except Exception:
+            pass
+        container.put_archive("/", buf.read())
+        container.exec_run(["chmod", "-R", "a+rx", "/task", "/harness"], user="root")
+
         exec_result = container.exec_run(
-            ["bash", "-c", f"cd /workspace && bash /tmp/grade.sh"],
+            [
+                "bash", "-c",
+                "bash /task/grade.sh /workspace /reports /submission /task",
+            ],
             environment={
+                "PYTHONPATH": "/workspace",
                 "WORKSPACE": "/workspace",
-                "TASK_DIR": str(task_dir),
+                "REPORTS": "/reports",
+                "SUBMISSION": "/submission",
+                "TASK_DIR": "/task",
             },
             workdir="/workspace",
         )
         output = exec_result.output.decode("utf-8", errors="replace")
         exit_code = exec_result.exit_code
 
-        # Try to read score.json if grader wrote one
-        score_path = os.path.join(ws_path, "score.json")
+        # score.json is written to /reports/score.json by the canonical graders.
+        reports_path = session.get("reports_path") or os.path.join(
+            session["workspace_dir"], "reports")
         score = None
-        if os.path.exists(score_path):
-            with open(score_path) as f:
-                score = json.load(f)
+        for candidate in ("score.json",):
+            p = os.path.join(reports_path, candidate)
+            if os.path.exists(p):
+                try:
+                    with open(p) as f:
+                        score = json.load(f)
+                    break
+                except Exception as e:
+                    print(f"[grade] failed to read {p}: {e}")
 
         return {
             "status": "graded",
             "exit_code": exit_code,
-            "output": output[-2000:],  # Last 2000 chars
+            "output": output[-2000:],
             "score": score,
         }
     except Exception as e:
@@ -362,6 +666,21 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
             await websocket.close()
         except Exception:
             pass
+
+
+@app.on_event("startup")
+async def startup_cleanup():
+    """Remove orphan tb-human-* containers left behind by a prior crash."""
+    try:
+        for c in docker_client.containers.list(all=True):
+            if c.name.startswith("tb-human-"):
+                try:
+                    c.remove(force=True)
+                    print(f"[startup] removed orphan container {c.name}")
+                except Exception as e:
+                    print(f"[startup] failed to remove {c.name}: {e}")
+    except Exception as e:
+        print(f"[startup] orphan scan failed: {e}")
 
 
 @app.on_event("shutdown")
