@@ -76,6 +76,7 @@ export default function App() {
         onUpdateFile={(path, content) => updateFile(path, content)}
         onPhaseChange={setPhase}
         onLog={addLog}
+        saveStatus={saveStatus}
       />
     );
   }

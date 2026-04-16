@@ -14,9 +14,10 @@ interface OracleViewProps {
   onUpdateFile: (path: string, content: string) => void;
   onPhaseChange: (phase: SessionState['phase']) => void;
   onLog: (action: string, detail?: Record<string, unknown>) => void;
+  saveStatus?: 'idle' | 'saving' | 'saved' | 'error';
 }
 
-export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog }: OracleViewProps) {
+export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog, saveStatus }: OracleViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(files.find(f => !f.readOnly)?.path ?? null);
   const [leftTab, setLeftTab] = useState<'spec' | 'brief'>('spec');
   const [grading, setGrading] = useState(false);
@@ -175,6 +176,28 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog 
           <Resizer direction="horizontal" onResize={useCallback((d: number) => setFileTreeWidth(w => Math.max(120, Math.min(350, w + d))), [])} />
 
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+            {currentFile && (
+              <div style={{
+                padding: '4px 12px', background: '#181825', fontSize: 11, color: '#585b70',
+                borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              }}>
+                <span>{currentFile.path}{currentFile.readOnly && <span style={{marginLeft:8,color:'#6c7086'}}>(read-only)</span>}</span>
+                {!currentFile.readOnly && isActive && (
+                  <span style={{
+                    fontSize: 10, fontWeight: 600,
+                    color: saveStatus === 'saved' ? '#a6e3a1'
+                      : saveStatus === 'saving' ? '#f9e2af'
+                      : saveStatus === 'error' ? '#f38ba8'
+                      : '#585b70',
+                  }}>
+                    {saveStatus === 'saving' ? '● Saving…'
+                      : saveStatus === 'saved' ? '● Synced to container'
+                      : saveStatus === 'error' ? '● Save failed'
+                      : '○ Ready'}
+                  </span>
+                )}
+              </div>
+            )}
             <div style={{ flex: 1, overflow: 'hidden' }}>
               {currentFile ? (
                 <CodeEditor
