@@ -665,50 +665,96 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
         socket=True,
         tty=True,
     )
-    # Get the raw socket
     raw_sock = sock._sock
+
+    # Enable TCP keepalive so dead docker-exec sockets are detected in seconds,
+    # not minutes. Without this, a silently-dropped exec socket leaves the WS
+    # reader blocked in recv() forever and the terminal appears frozen.
+    import socket as _socket
+    try:
+        raw_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+        # Linux-specific knobs (harmless if unavailable).
+        for opt, val in (("TCP_KEEPIDLE", 30), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 3)):
+            if hasattr(_socket, opt):
+                raw_sock.setsockopt(_socket.IPPROTO_TCP, getattr(_socket, opt), val)
+    except Exception as e:
+        print(f"[ws] keepalive setup failed: {e}")
+
+    stop_event = asyncio.Event()
 
     await websocket.send_json({"type": "output", "data": "Connected to sandbox terminal.\r\n"})
 
     async def read_from_container():
-        """Read output from container and send to WebSocket."""
+        """Pump container stdout → WebSocket. Triggers shutdown on EOF/error."""
         loop = asyncio.get_event_loop()
         try:
-            while True:
+            while not stop_event.is_set():
                 data = await loop.run_in_executor(None, lambda: raw_sock.recv(4096))
                 if not data:
+                    await websocket.send_json({"type": "output",
+                        "data": "\r\n\x1b[31m[Shell exited — reload page]\x1b[0m\r\n"})
                     break
-                await websocket.send_json({"type": "output", "data": data.decode("utf-8", errors="replace")})
-        except Exception:
-            pass
+                await websocket.send_json({"type": "output",
+                    "data": data.decode("utf-8", errors="replace")})
+        except Exception as e:
+            print(f"[ws/read] {type(e).__name__}: {e}")
+        finally:
+            stop_event.set()
 
     async def write_to_container():
-        """Read input from WebSocket and send to container."""
+        """Pump WebSocket → container stdin. Handles ping/pong keepalive."""
         try:
-            while True:
+            while not stop_event.is_set():
                 msg = await websocket.receive_text()
                 parsed = json.loads(msg)
-                if parsed.get("type") == "input":
-                    raw_sock.send(parsed["data"].encode("utf-8"))
-                elif parsed.get("type") == "resize":
-                    # Resize terminal
-                    docker_client.api.exec_resize(
-                        exec_instance["Id"],
-                        height=parsed.get("rows", 24),
-                        width=parsed.get("cols", 80),
-                    )
+                t = parsed.get("type")
+                if t == "input":
+                    try:
+                        raw_sock.send(parsed["data"].encode("utf-8"))
+                    except (BrokenPipeError, ConnectionResetError, OSError) as e:
+                        print(f"[ws/write] raw_sock dead: {e}")
+                        break
+                elif t == "resize":
+                    try:
+                        docker_client.api.exec_resize(
+                            exec_instance["Id"],
+                            height=parsed.get("rows", 24),
+                            width=parsed.get("cols", 80),
+                        )
+                    except Exception:
+                        pass
+                elif t == "ping":
+                    await websocket.send_json({"type": "pong"})
         except WebSocketDisconnect:
             pass
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[ws/write] {type(e).__name__}: {e}")
+        finally:
+            stop_event.set()
 
-    # Run both directions concurrently
     reader = asyncio.create_task(read_from_container())
     writer = asyncio.create_task(write_to_container())
 
+    # Keepalive loop: while neither side exits, fire a heartbeat every 20s.
+    async def keepalive_loop():
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=20)
+                break  # stop_event set → exit loop
+            except asyncio.TimeoutError:
+                try:
+                    await websocket.send_json({"type": "hb"})
+                except Exception:
+                    stop_event.set()
+                    break
+    keepalive = asyncio.create_task(keepalive_loop())
+
     try:
-        await asyncio.gather(reader, writer, return_exceptions=True)
+        await asyncio.gather(reader, writer, keepalive, return_exceptions=True)
     finally:
+        for t in (reader, writer, keepalive):
+            if not t.done():
+                t.cancel()
         try:
             raw_sock.close()
         except Exception:
