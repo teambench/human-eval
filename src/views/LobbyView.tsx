@@ -79,13 +79,20 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
 
   const handleJoin = () => {
     if (!selectedTask || !selectedRole || !profileValid) return;
-    // For now, use DEMO_TASK as the full config (in production, load from backend/generators)
-    const taskConfig: TaskConfig = {
-      ...DEMO_TASK,
-      taskId: selectedTask.taskId,
-      category: selectedTask.category,
-      difficulty: selectedTask.difficulty,
-    };
+    // Use DEMO_TASK only for the demo; all other tasks start empty and load
+    // files from the backend after session creation (generator-staged).
+    const isDemo = selectedTask.taskId === 'DEMO_api_fix';
+    const taskConfig: TaskConfig = isDemo
+      ? { ...DEMO_TASK }
+      : {
+          taskId: selectedTask.taskId,
+          category: selectedTask.category,
+          difficulty: selectedTask.difficulty,
+          timeLimit: 1800,
+          specMd: `# ${selectedTask.taskId}\n\nRead \`brief.md\` in the workspace terminal for the full task description.`,
+          briefMd: `# ${selectedTask.taskId}\n\nLoading task from backend... See \`brief.md\` in /workspace.`,
+          files: [],
+        };
     onJoin(taskConfig, selectedRole, mode || 'team', profile.name.trim(), profile);
   };
 

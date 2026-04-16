@@ -402,6 +402,53 @@ class WriteFileRequest(BaseModel):
     content: str
 
 
+@app.get("/api/session/{session_id}/files")
+async def list_files(session_id: str):
+    """Return all files in the session's workspace (for the editor panel)."""
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    ws_path = session.get("ws_path") or os.path.join(session["workspace_dir"], "workspace")
+    results = []
+    SKIP_DIRS = {"__pycache__", ".pytest_cache", ".git", "node_modules", ".venv", ".hypothesis"}
+    for root, dirs, fnames in os.walk(ws_path):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for fn in sorted(fnames):
+            if fn.endswith((".pyc", ".pyo")):
+                continue
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, ws_path)
+            try:
+                size = os.path.getsize(full)
+                if size > 200_000:
+                    content = f"<file too large: {size} bytes>"
+                else:
+                    with open(full, "r", encoding="utf-8", errors="replace") as f:
+                        content = f.read()
+            except Exception as e:
+                content = f"<read error: {e}>"
+            # Tests, brief, spec, and expected outputs are read-only for the human.
+            read_only = (
+                rel.startswith("tests/")
+                or rel in ("brief.md", "spec.md", "README.md", "README_HUMAN.md",
+                           "conftest.py", "analysis_guidance.md")
+                or rel.endswith("_test.go")
+            )
+            language = {
+                ".py": "python", ".js": "javascript", ".ts": "typescript",
+                ".tsx": "typescript", ".go": "go", ".sh": "shell",
+                ".md": "markdown", ".yaml": "yaml", ".yml": "yaml",
+                ".json": "json", ".txt": "plaintext", ".sql": "sql",
+            }.get(os.path.splitext(rel)[1], "plaintext")
+            results.append({
+                "path": rel,
+                "content": content,
+                "language": language,
+                "readOnly": read_only,
+            })
+    return {"files": results}
+
+
 @app.post("/api/session/{session_id}/write-file")
 async def write_file(session_id: str, body: WriteFileRequest):
     """Write a file to the session's container workspace (called on every Monaco save)."""

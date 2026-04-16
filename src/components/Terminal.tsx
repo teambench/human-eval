@@ -58,9 +58,11 @@ export function Terminal({ sessionId, taskId, files: initialFiles, disabled, onC
       term.write('Connecting to sandbox...\r\n');
 
       try {
-        // Send files to backend so they appear in the Docker workspace
+        // Send frontend-provided files only for the hardcoded DEMO task.
+        // For all other tasks, the backend stages files from generators; sending
+        // DEMO overlays would pollute the real workspace with src/server.py etc.
         const fileMap: Record<string, string> = {};
-        if (initialFiles) {
+        if (taskId === 'DEMO_api_fix' && initialFiles) {
           for (const f of initialFiles) fileMap[f.path] = f.content;
         }
         const resp = await fetch(

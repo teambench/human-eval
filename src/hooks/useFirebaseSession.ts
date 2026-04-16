@@ -148,6 +148,34 @@ export function useFirebaseSession() {
     return () => unsubs.forEach(u => u());
   }, [sessionId]);
 
+  // Load workspace files from the backend container after session creation.
+  // Generator-staged tasks don't ship files in the frontend; we fetch them here.
+  useEffect(() => {
+    if (!sessionId || !task) return;
+    if (task.files && task.files.length > 0) return;
+    let cancelled = false;
+    const fetchFiles = async (attempt = 0) => {
+      try {
+        const r = await fetch(`${BACKEND_API}/api/session/${sessionId}/files`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        if (cancelled) return;
+        const entries: FileEntry[] = (data.files || []).map((f: any) => ({
+          path: f.path,
+          content: f.content,
+          language: f.language,
+          readOnly: f.readOnly,
+        }));
+        if (entries.length > 0) setFiles(entries);
+        else if (attempt < 10) setTimeout(() => fetchFiles(attempt + 1), 1000);
+      } catch {
+        if (attempt < 10) setTimeout(() => fetchFiles(attempt + 1), 1000);
+      }
+    };
+    fetchFiles();
+    return () => { cancelled = true; };
+  }, [sessionId, task]);
+
   const join = useCallback(async (
     selectedTask: TaskConfig, selectedRole: Role, selectedMode: SessionMode,
     name: string, profile?: UserProfile,
