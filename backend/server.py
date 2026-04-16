@@ -397,26 +397,30 @@ async def create_session(session_id: str, task_id: str = "DEMO_api_fix", body: C
     }
 
 
+class WriteFileRequest(BaseModel):
+    path: str
+    content: str
+
+
 @app.post("/api/session/{session_id}/write-file")
-async def write_file(session_id: str, path: str, content: str):
-    """Write a file to the session's workspace (called when executor edits in Monaco)."""
+async def write_file(session_id: str, body: WriteFileRequest):
+    """Write a file to the session's container workspace (called on every Monaco save)."""
     session = get_session(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
 
-    ws_path = os.path.join(session["workspace_dir"], "workspace")
-    file_path = os.path.join(ws_path, path)
+    ws_path = session.get("ws_path") or os.path.join(session["workspace_dir"], "workspace")
+    file_path = os.path.join(ws_path, body.path)
 
-    # Security: prevent path traversal
     real_path = os.path.realpath(file_path)
     if not real_path.startswith(os.path.realpath(ws_path)):
         raise HTTPException(400, "Invalid path")
 
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     with open(file_path, "w") as f:
-        f.write(content)
+        f.write(body.content)
 
-    return {"status": "ok"}
+    return {"status": "ok", "path": body.path, "size": len(body.content)}
 
 
 @app.post("/api/session/{session_id}/grade")

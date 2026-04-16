@@ -4,6 +4,8 @@ import { db } from '../firebase';
 import { Role, SessionMode, ChatMessage, FileEntry, TaskConfig, SessionState } from '../types';
 import { UserProfile } from '../views/LobbyView';
 
+const BACKEND_API = `https://${import.meta.env.VITE_BACKEND_HOST || 'arrives-ranch-brisbane-saturn.trycloudflare.com'}`;
+
 function generateId(): string {
   return Math.random().toString(36).substring(2, 10);
 }
@@ -240,6 +242,16 @@ export function useFirebaseSession() {
     const key = path.replace(/[.\/\[\]#$]/g, '_');
     await update(ref(db, `teambench/sessions/${sessionId}/files/${key}`), { content });
     addLog(sessionId, role, 'file_edit', { path, contentLength: content.length });
+    // Sync edits to the container workspace so terminal + grader see them.
+    try {
+      await fetch(`${BACKEND_API}/api/session/${sessionId}/write-file`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, content }),
+      });
+    } catch {
+      // Backend may be unreachable; Firebase is still the source of truth.
+    }
   }, [sessionId, role]);
 
   const setPhase = useCallback(async (newPhase: SessionState['phase']) => {
