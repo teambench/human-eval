@@ -17,9 +17,10 @@ interface ExecutorViewProps {
   onUpdateFile: (path: string, content: string) => void;
   onPhaseChange: (phase: SessionState['phase']) => void;
   onLog: (action: string, detail?: Record<string, unknown>) => void;
+  saveStatus?: 'idle' | 'saving' | 'saved' | 'error';
 }
 
-export function ExecutorView({ session, files, messages, onSendMessage, onUpdateFile, onPhaseChange, onLog }: ExecutorViewProps) {
+export function ExecutorView({ session, files, messages, onSendMessage, onUpdateFile, onPhaseChange, onLog, saveStatus }: ExecutorViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(files.find(f => !f.readOnly)?.path ?? null);
   const [bottomTab, setBottomTab] = useState<'terminal' | 'brief'>('brief');
 
@@ -88,6 +89,30 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
 
         {/* Center: Editor + Terminal */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          {/* Editor header with save-sync indicator */}
+          {currentFile && (
+            <div style={{
+              padding: '4px 12px', background: '#181825', fontSize: 11, color: '#585b70',
+              borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            }}>
+              <span>{currentFile.path}{currentFile.readOnly && <span style={{marginLeft:8,color:'#6c7086'}}>(read-only)</span>}</span>
+              {!currentFile.readOnly && canEdit && (
+                <span style={{
+                  fontSize: 10, fontWeight: 600,
+                  color: saveStatus === 'saved' ? '#a6e3a1'
+                    : saveStatus === 'saving' ? '#f9e2af'
+                    : saveStatus === 'error' ? '#f38ba8'
+                    : '#585b70',
+                }}>
+                  {saveStatus === 'saving' ? '● Saving…'
+                    : saveStatus === 'saved' ? '● Synced to container'
+                    : saveStatus === 'error' ? '● Save failed'
+                    : '○ Ready'}
+                </span>
+              )}
+            </div>
+          )}
+
           {/* Editor */}
           <div style={{ flex: 1, overflow: 'hidden' }}>
             {currentFile ? (

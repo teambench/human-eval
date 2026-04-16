@@ -13,7 +13,7 @@ export default function App() {
     task, sessionId, role, mode, phase,
     messages, files, participants,
     startTime, endTime,
-    joining, waitingForTeam,
+    joining, waitingForTeam, saveStatus,
     join, sendMessage, updateFile, setPhase, exportLogs, addLog,
   } = useFirebaseSession();
 
@@ -92,7 +92,7 @@ export default function App() {
       return (
         <ExecutorView session={session} files={files} messages={messages}
           onSendMessage={onSend} onUpdateFile={(p, c) => updateFile(p, c)}
-          onPhaseChange={setPhase} onLog={addLog} />
+          onPhaseChange={setPhase} onLog={addLog} saveStatus={saveStatus} />
       );
     case 'verifier':
       return (

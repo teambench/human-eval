@@ -113,6 +113,7 @@ export function useFirebaseSession() {
   const [endTime, setEndTime] = useState<number | null>(null);
   const [joining, setJoining] = useState(false);
   const [waitingForTeam, setWaitingForTeam] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
   // Subscribe to session
   useEffect(() => {
@@ -271,14 +272,19 @@ export function useFirebaseSession() {
     await update(ref(db, `teambench/sessions/${sessionId}/files/${key}`), { content });
     addLog(sessionId, role, 'file_edit', { path, contentLength: content.length });
     // Sync edits to the container workspace so terminal + grader see them.
+    setSaveStatus('saving');
     try {
-      await fetch(`${BACKEND_API}/api/session/${sessionId}/write-file`, {
+      const r = await fetch(`${BACKEND_API}/api/session/${sessionId}/write-file`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path, content }),
       });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setSaveStatus('saved');
+      // Auto-fade back to idle after 1.5s so the badge doesn't stick.
+      setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 1500);
     } catch {
-      // Backend may be unreachable; Firebase is still the source of truth.
+      setSaveStatus('error');
     }
   }, [sessionId, role]);
 
@@ -355,6 +361,7 @@ export function useFirebaseSession() {
     task, sessionId, role, mode, phase,
     messages: getVisibleMessages(), files: getVisibleFiles(),
     participants, startTime, endTime, joining, waitingForTeam,
+    saveStatus,
     join, sendMessage, updateFile, setPhase, exportLogs,
     addLog: (action: string, detail?: Record<string, unknown>) => {
       if (sessionId && role) addLog(sessionId, role, action, detail ?? {});
