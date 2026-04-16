@@ -6,6 +6,26 @@ import { UserProfile } from '../views/LobbyView';
 
 const BACKEND_API = `https://${import.meta.env.VITE_BACKEND_HOST || 'arrives-ranch-brisbane-saturn.trycloudflare.com'}`;
 
+/**
+ * Sanitize editor content before saving to the container. Browser pastes from
+ * xterm/less can carry pager status (`[18/1833]`), ANSI escapes, CRLF endings,
+ * and runaway trailing whitespace — all of which corrupt Python source.
+ */
+function sanitizeFileContent(text: string): string {
+  // 1. Normalize line endings to LF.
+  let out = text.replace(/\r\n?/g, '\n');
+  // 2. Strip ANSI/CSI escape sequences (ESC [ ... letter).
+  out = out.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '');
+  // 3. Strip pager status indicators like "[18/1833]" or "[lines 1-50]" at EOL.
+  out = out.split('\n').map(line => {
+    let l = line.replace(/\s+\[\d+\/\d+\]\s*$/, '');
+    l = l.replace(/\s+\[lines? \d+(?:[-,]\s*\d+)?\]\s*$/i, '');
+    // 4. Trim trailing whitespace (always safe for Python).
+    return l.replace(/[ \t]+$/, '');
+  }).join('\n');
+  return out;
+}
+
 function generateId(): string {
   return Math.random().toString(36).substring(2, 10);
 }
@@ -268,20 +288,20 @@ export function useFirebaseSession() {
 
   const updateFile = useCallback(async (path: string, content: string) => {
     if (!sessionId || !role) return;
+    const clean = sanitizeFileContent(content);
     const key = path.replace(/[.\/\[\]#$]/g, '_');
-    await update(ref(db, `teambench/sessions/${sessionId}/files/${key}`), { content });
-    addLog(sessionId, role, 'file_edit', { path, contentLength: content.length });
+    await update(ref(db, `teambench/sessions/${sessionId}/files/${key}`), { content: clean });
+    addLog(sessionId, role, 'file_edit', { path, contentLength: clean.length });
     // Sync edits to the container workspace so terminal + grader see them.
     setSaveStatus('saving');
     try {
       const r = await fetch(`${BACKEND_API}/api/session/${sessionId}/write-file`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, content }),
+        body: JSON.stringify({ path, content: clean }),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       setSaveStatus('saved');
-      // Auto-fade back to idle after 1.5s so the badge doesn't stick.
       setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 1500);
     } catch {
       setSaveStatus('error');

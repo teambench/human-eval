@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -449,6 +450,27 @@ async def list_files(session_id: str):
     return {"files": results}
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+_PAGER_STATUS_RE = re.compile(r"\s+\[\d+/\d+\]\s*$")
+_PAGER_LINES_RE = re.compile(r"\s+\[lines? \d+(?:[-,]\s*\d+)?\]\s*$", re.IGNORECASE)
+
+
+def _sanitize_source(text: str) -> str:
+    """Strip paste artifacts that browser editors carry through xterm/less.
+
+    Mirrors the frontend sanitizeFileContent — defense in depth so older
+    cached clients can't push corrupted source into the workspace.
+    """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _ANSI_RE.sub("", text)
+    cleaned_lines = []
+    for line in text.split("\n"):
+        line = _PAGER_STATUS_RE.sub("", line)
+        line = _PAGER_LINES_RE.sub("", line)
+        cleaned_lines.append(line.rstrip(" \t"))
+    return "\n".join(cleaned_lines)
+
+
 @app.post("/api/session/{session_id}/write-file")
 async def write_file(session_id: str, body: WriteFileRequest):
     """Write a file to the session's container workspace (called on every Monaco save)."""
@@ -463,11 +485,13 @@ async def write_file(session_id: str, body: WriteFileRequest):
     if not real_path.startswith(os.path.realpath(ws_path)):
         raise HTTPException(400, "Invalid path")
 
+    clean = _sanitize_source(body.content)
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     with open(file_path, "w") as f:
-        f.write(body.content)
+        f.write(clean)
 
-    return {"status": "ok", "path": body.path, "size": len(body.content)}
+    return {"status": "ok", "path": body.path, "size": len(clean),
+            "stripped_bytes": len(body.content) - len(clean)}
 
 
 @app.post("/api/session/{session_id}/grade")
