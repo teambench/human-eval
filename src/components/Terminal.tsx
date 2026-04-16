@@ -53,12 +53,6 @@ export function Terminal({ sessionId, taskId, files: initialFiles, disabled, onC
       const resizeObserver = new ResizeObserver(() => fitAddon.fit());
       resizeObserver.observe(termRef.current!);
 
-      cleanupFn = () => {
-        resizeObserver.disconnect();
-        wsRef.current?.close();
-        term.dispose();
-      };
-
       // Try connecting to real backend
       setStatus('connecting');
       term.write('Connecting to sandbox...\r\n');
@@ -82,26 +76,66 @@ export function Terminal({ sessionId, taskId, files: initialFiles, disabled, onC
         const ws = new WebSocket(`${BACKEND_URL}/ws/terminal/${sessionId}`);
         wsRef.current = ws;
 
-        ws.onopen = () => {
-          if (cancelled) return;
-          setStatus('connected');
-          term.clear();
-          ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
+        let pingInterval: ReturnType<typeof setInterval> | null = null;
+        let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT = 10;
+
+        const connectWs = () => {
+          const ws = new WebSocket(`${BACKEND_URL}/ws/terminal/${sessionId}`);
+          wsRef.current = ws;
+
+          ws.onopen = () => {
+            if (cancelled) return;
+            setStatus('connected');
+            reconnectAttempts = 0;
+            if (reconnectAttempts === 0) term.clear();
+            ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
+            // Keepalive: ping every 30s to prevent Cloudflare idle timeout
+            pingInterval = setInterval(() => {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'ping' }));
+              }
+            }, 30000);
+          };
+
+          ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'output') term.write(msg.data);
+          };
+
+          ws.onclose = () => {
+            if (pingInterval) clearInterval(pingInterval);
+            if (!cancelled && reconnectAttempts < MAX_RECONNECT) {
+              setStatus('connecting');
+              term.write('\r\n\x1b[33m[Reconnecting...]\x1b[0m\r\n');
+              reconnectAttempts++;
+              reconnectTimeout = setTimeout(connectWs, Math.min(1000 * reconnectAttempts, 5000));
+            } else if (!cancelled) {
+              setStatus('disconnected');
+              term.write('\r\n\x1b[31m[Disconnected — reload page to reconnect]\x1b[0m\r\n');
+            }
+          };
+
+          ws.onerror = () => { /* onclose will fire next */ };
+
+          term.onData((data: string) => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data }));
+          });
+          term.onResize(({ rows, cols }: { rows: number; cols: number }) => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', rows, cols }));
+          });
+
+          cleanupFn = () => {
+            if (pingInterval) clearInterval(pingInterval);
+            if (reconnectTimeout) clearTimeout(reconnectTimeout);
+            resizeObserver.disconnect();
+            ws.close();
+            term.dispose();
+          };
         };
 
-        ws.onmessage = (event) => {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'output') term.write(msg.data);
-        };
-
-        ws.onclose = () => {
-          if (!cancelled) {
-            setStatus('disconnected');
-            term.write('\r\n\x1b[31m[Disconnected]\x1b[0m\r\n');
-          }
-        };
-
-        ws.onerror = () => { if (!cancelled) { setFallback(true); setStatus('disconnected'); } };
+        connectWs();
 
         term.onData((data: string) => {
           if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data }));
