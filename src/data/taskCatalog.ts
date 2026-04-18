@@ -9,45 +9,66 @@ export interface TaskEntry {
   fileCount?: string; // e.g. "3 files"
 }
 
-// 20 representative tasks from the TeamBench benchmark
+// The 20 stratified human-eval tasks from selected_20_tasks.json.
+// IMPORTANT: this list must match exactly — participants should ONLY see these.
 export const TASK_CATALOG: TaskEntry[] = [
-  // Security
-  { taskId: 'SEC3_crypto_upgrade', category: 'Security', difficulty: 'hard', description: 'Upgrade legacy cryptographic primitives to modern standards' },
-  { taskId: 'CRYPTO1_nonce_reuse', category: 'Security', difficulty: 'expert', description: 'Fix AES-GCM nonce reuse and weak key derivation' },
-  { taskId: 'CRYPTO5_tls_config', category: 'Security', difficulty: 'hard', description: 'Harden TLS configuration against downgrade attacks' },
+  // Adversarial
+  { taskId: 'TRAP1_spec_conflict', category: 'Adversarial', difficulty: 'hard', description: 'Spec contradicts secondary docs; determine which 4 of 7 endpoints need validation and which 3 are intentionally relaxed' },
 
-  // Distributed Systems
-  { taskId: 'DIST1_queue_race', category: 'Distributed Systems', difficulty: 'expert', description: 'Fix race conditions in a distributed message queue' },
-  { taskId: 'DIST3_idempotency', category: 'Distributed Systems', difficulty: 'hard', description: 'Add idempotency keys to payment operations' },
+  // Code Review
+  { taskId: 'CR4_api_review', category: 'Code Review', difficulty: 'hard', description: 'Fix multiple API design violations: routing, naming, status codes, pagination, and error response format' },
+
+  // Cross-System Integration
+  { taskId: 'CROSS1_api_contract', category: 'Cross-System Integration', difficulty: 'hard', description: 'Fix 3 mismatches between a Go server and Python client: field naming, pagination keys, and error format' },
 
   // Data Engineering
-  { taskId: 'D1_schema_drift', category: 'Data Engineering', difficulty: 'medium', description: 'Detect and fix schema drift across services' },
-  { taskId: 'D5_query_optimize', category: 'Data Engineering', difficulty: 'hard', description: 'Optimize slow queries in a data pipeline' },
-  { taskId: 'D6_data_reconcile', category: 'Data Engineering', difficulty: 'expert', description: 'Reconcile inconsistent data across systems' },
+  { taskId: 'D6_data_reconcile', category: 'Data Engineering', difficulty: 'expert', description: 'Reconcile subscriber records across two systems with conflicting fields, manual overrides, and missing data' },
+
+  // Distributed Systems
+  { taskId: 'DIST1_queue_race', category: 'Distributed Systems', difficulty: 'expert', description: 'Fix 3 race conditions in a message queue: TOCTOU capacity, missing ack, and type-unsafe priority comparison' },
+
+  // GitHub Issues (Real-World)
+  { taskId: 'GH1002_scipy_24753', category: 'GitHub Issues (Real-World)', difficulty: 'medium', description: 'Fix a real scipy bug from PR #24753 — Cython memoryview const qualifier issue' },
 
   // Incident Response
-  { taskId: 'INC6_deadlock', category: 'Incident Response', difficulty: 'expert', description: 'Diagnose and resolve a production deadlock' },
-  { taskId: 'INC10_rollback_plan', category: 'Incident Response', difficulty: 'hard', description: 'Plan rollback for a failed coordinated deployment' },
+  { taskId: 'INC1_cascade_failure', category: 'Incident Response', difficulty: 'hard', description: 'Diagnose root cause of a cascading service failure and add retry/guard logic in the correct order' },
 
-  // Cross-System
-  { taskId: 'CROSS1_api_contract', category: 'Cross-System', difficulty: 'hard', description: 'Fix Go server + Python client API contract mismatch' },
-  { taskId: 'CROSS7_config_drift', category: 'Operations', difficulty: 'hard', description: 'Detect and fix configuration drift across environments' },
+  // Information Retrieval
+  { taskId: 'IR2_misinformation_trap', category: 'Information Retrieval', difficulty: 'hard', description: 'Answer a factual question by cross-referencing 3 documents, one of which contains planted misinformation' },
 
-  // Code Review & Testing
-  { taskId: 'CR1_review_respond', category: 'Code Review', difficulty: 'medium', description: 'Respond to code review comments with fixes' },
-  { taskId: 'CR2_style_enforce', category: 'Code Review', difficulty: 'easy', description: 'Enforce coding style guidelines across a codebase' },
-  { taskId: 'CR5_test_coverage', category: 'Testing', difficulty: 'medium', description: 'Improve test coverage for critical paths' },
+  // Long-Horizon
+  { taskId: 'LH2_budgeted_workflow', category: 'Long-Horizon', difficulty: 'expert', description: 'Fix invalid data files and produce a budget report within a 20-execution budget constraint' },
 
-  // Adversarial
-  { taskId: 'TRAP1_spec_conflict', category: 'Adversarial', difficulty: 'hard', description: 'Resolve contradictions between spec and changelog' },
+  // Multi-language
+  { taskId: 'JS2_xss_sanitize', category: 'Multi-language', difficulty: 'hard', description: 'Fix XSS vulnerabilities across a Node.js/EJS app: sanitize HTML, validate URLs, add CSP headers' },
 
-  // Pipeline & Long-Horizon
-  { taskId: 'PIPE2_data_pipeline', category: 'Pipeline', difficulty: 'hard', description: 'Fix a multi-stage data pipeline with silent failures' },
-  { taskId: 'LH2_budgeted_workflow', category: 'Long-Horizon', difficulty: 'expert', description: 'Complete a multi-step workflow within constraints' },
+  // Operations
+  { taskId: 'O6_perf_tuning', category: 'Operations', difficulty: 'expert', description: 'Tune 5 config knobs to meet CPU, memory, latency, throughput, and error-rate targets simultaneously' },
 
-  // API & Information Retrieval
-  { taskId: 'API1_version_compat', category: 'API Design', difficulty: 'hard', description: 'Add v1/v2 compatibility shims to a REST API' },
-  { taskId: 'IR2_misinformation_trap', category: 'Information Retrieval', difficulty: 'hard', description: 'Identify misinformation in conflicting documentation' },
+  // API Design
+  { taskId: 'API1_version_compat', category: 'API Design', difficulty: 'hard', description: 'Add v1 compatibility shims to 3 endpoints while deliberately NOT shimming a security endpoint' },
+
+  // GitHub Issues (Real-World)
+  { taskId: 'GH103_redis-py_3998', category: 'GitHub Issues (Real-World)', difficulty: 'medium', description: 'Fix redis-py connection repr to mask sensitive fields (password, SSL credentials)' },
+
+  // Pipeline
+  { taskId: 'PIPE2_data_pipeline', category: 'Pipeline', difficulty: 'hard', description: 'Fix 3 bugs in a multi-stage ETL pipeline: over-aggressive null filtering, wrong truncation limit, swapped columns' },
+
+  // Policy / Access Control
+  { taskId: 'P3_access_control', category: 'Policy', difficulty: 'hard', description: 'Implement RBAC with deny-by-default, role-based endpoint permissions, and audit logging' },
+
+  // Data Science
+  { taskId: 'RDS10_survey_analysis', category: 'Data Science', difficulty: 'hard', description: 'Run OLS regression on survey data to measure remote-work effect on job satisfaction with proper controls' },
+  { taskId: 'RDS13_smote_leakage', category: 'Data Science', difficulty: 'hard', description: 'Fix data leakage in a fraud detection pipeline: apply SMOTE after train/test split, not before' },
+
+  // Security / Cryptography
+  { taskId: 'CRYPTO1_nonce_reuse', category: 'Security', difficulty: 'expert', description: 'Fix 3 crypto bugs (counter nonce, weak PBKDF2, truncated tag) while preserving a correct salt function' },
+
+  // Multi-language (Go)
+  { taskId: 'GO1_concurrency_fix', category: 'Multi-language', difficulty: 'hard', description: 'Fix 3 Go concurrency bugs: unprotected shared map, unbuffered channel, and lock ordering deadlock' },
+
+  // Testing
+  { taskId: 'TEST3_integration', category: 'Testing', difficulty: 'hard', description: 'Write integration tests that cover CRUD, auth, search, pagination, schema validation, and mutation detection' },
 ];
 
 // Demo task with full spec/files for testing the interface

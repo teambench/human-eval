@@ -98,7 +98,24 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
 
   // ── Step: Waiting Room ──
   if (step === 'waiting' && waitingSessionId) {
-    return <WaitingRoom sessionId={waitingSessionId} participants={participants || {}} taskId={selectedTask?.taskId || ''} />;
+    return <WaitingRoom
+      sessionId={waitingSessionId}
+      participants={participants || {}}
+      taskId={selectedTask?.taskId || ''}
+      onCancel={() => {
+        // Clean up localStorage + Firebase waiting queue, then reload to reset state.
+        if (selectedTask?.taskId && selectedRole) {
+          localStorage.removeItem(`teambench_session_${selectedTask.taskId}_${selectedRole}_team`);
+        }
+        // Remove self from the Firebase waiting queue so other participants see accurate counts.
+        if (selectedTask?.taskId && selectedRole) {
+          import('firebase/database').then(({ ref: fbRef, remove }) => {
+            remove(fbRef(db, `teambench/waiting/${selectedTask.taskId}/${selectedRole}`)).catch(() => {});
+          });
+        }
+        window.location.reload();
+      }}
+    />;
   }
 
   return (
@@ -304,12 +321,19 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
 }
 
 // ── Waiting Room (game-lobby style) ──
-function WaitingRoom({ sessionId, participants: initialParticipants, taskId }: {
+function WaitingRoom({ sessionId, participants: initialParticipants, taskId, onCancel }: {
   sessionId: string;
   participants: Record<string, { name: string; joinedAt: number }>;
   taskId: string;
+  onCancel?: () => void;
 }) {
   const [participants, setParticipants] = useState(initialParticipants);
+  const [waitSeconds, setWaitSeconds] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => setWaitSeconds(s => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const unsub = onValue(ref(db, `teambench/sessions/${sessionId}/participants`), (snap) => {
@@ -383,6 +407,26 @@ function WaitingRoom({ sessionId, participants: initialParticipants, taskId }: {
         <p style={{ color: '#585b70', fontSize: 11, marginTop: 24 }}>
           Share this page with your teammates. They should pick the same task and a different role.
         </p>
+
+        {waitSeconds > 60 && (
+          <p style={{ color: '#f9e2af', fontSize: 12, marginTop: 12 }}>
+            Waiting for {Math.floor(waitSeconds / 60)}m {waitSeconds % 60}s...
+            {waitSeconds > 180 && ' Consider switching to Solo Mode if teammates are unavailable.'}
+          </p>
+        )}
+
+        {onCancel && (
+          <button
+            onClick={onCancel}
+            style={{
+              marginTop: 20, background: 'transparent', color: '#f38ba8',
+              border: '1px solid #f38ba8', borderRadius: 8, padding: '10px 32px',
+              cursor: 'pointer', fontSize: 13, fontWeight: 600,
+            }}
+          >
+            Leave & Go Back
+          </button>
+        )}
 
         <style>{`
           @keyframes spin {

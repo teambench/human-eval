@@ -187,7 +187,20 @@ export function useFirebaseSession() {
           language: f.language,
           readOnly: f.readOnly,
         }));
-        if (entries.length > 0) setFiles(entries);
+        if (entries.length > 0) {
+          setFiles(entries);
+          // Populate specMd/briefMd from workspace files so the left panel
+          // shows the real task description instead of a placeholder.
+          const specFile = entries.find(f => f.path === 'spec.md');
+          const briefFile = entries.find(f => f.path === 'brief.md');
+          if (specFile || briefFile) {
+            setTask(prev => prev ? {
+              ...prev,
+              specMd: specFile?.content || prev.specMd,
+              briefMd: briefFile?.content || prev.briefMd,
+            } : prev);
+          }
+        }
         else if (attempt < 10) setTimeout(() => fetchFiles(attempt + 1), 1000);
       } catch {
         if (attempt < 10) setTimeout(() => fetchFiles(attempt + 1), 1000);
