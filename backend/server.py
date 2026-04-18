@@ -486,9 +486,19 @@ async def write_file(session_id: str, body: WriteFileRequest):
         raise HTTPException(400, "Invalid path")
 
     clean = _sanitize_source(body.content)
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    parent = os.path.dirname(file_path)
+    os.makedirs(parent, exist_ok=True)
     with open(file_path, "w") as f:
         f.write(clean)
+
+    # Container runs as uid 10001 (agent); make file + parent writable so the
+    # agent can overwrite or delete the file (e.g. when analysis.py regenerates
+    # results.json). Without this, tasks that write outputs hit PermissionError.
+    try:
+        os.chmod(file_path, 0o666)
+        os.chmod(parent, 0o777)
+    except OSError:
+        pass
 
     return {"status": "ok", "path": body.path, "size": len(clean),
             "stripped_bytes": len(body.content) - len(clean)}
