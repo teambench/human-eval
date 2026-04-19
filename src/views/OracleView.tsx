@@ -201,6 +201,7 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
             <div style={{ flex: 1, overflow: 'hidden' }}>
               {currentFile ? (
                 <CodeEditor
+                  path={currentFile.path}
                   content={currentFile.content}
                   language={currentFile.language}
                   readOnly={!isActive || currentFile.readOnly}

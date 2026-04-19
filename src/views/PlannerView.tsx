@@ -90,7 +90,7 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
                 </div>
                 <div style={{ flex: 1 }}>
                   {currentFile ? (
-                    <CodeEditor content={currentFile.content} language={currentFile.language} readOnly />
+                    <CodeEditor path={currentFile.path} content={currentFile.content} language={currentFile.language} readOnly />
                   ) : (
                     <div style={{ padding: 24, color: '#888' }}>Select a file to view</div>
                   )}

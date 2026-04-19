@@ -117,6 +117,7 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
           <div style={{ flex: 1, overflow: 'hidden' }}>
             {currentFile ? (
               <CodeEditor
+                path={currentFile.path}
                 content={currentFile.content}
                 language={currentFile.language}
                 readOnly={!canEdit || currentFile.readOnly}
