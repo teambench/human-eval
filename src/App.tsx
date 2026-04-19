@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useFirebaseSession } from './hooks/useFirebaseSession';
 import { LobbyView } from './views/LobbyView';
 import { PlannerView } from './views/PlannerView';
@@ -7,6 +7,7 @@ import { VerifierView } from './views/VerifierView';
 import { OracleView } from './views/OracleView';
 import { CompletedView } from './views/CompletedView';
 import { SurveyView } from './views/SurveyView';
+import { registerSessionCleanup } from './components/Terminal';
 
 export default function App() {
   const {
@@ -18,6 +19,14 @@ export default function App() {
   } = useFirebaseSession();
 
   const [surveyCompleted, setSurveyCompleted] = useState(false);
+
+  // Free the container slot when the participant closes the tab or navigates
+  // away. Without this, orphaned sessions linger for CONTAINER_TIMEOUT=1h
+  // and can exhaust MAX_CONTAINERS=20 during the study.
+  useEffect(() => {
+    if (!sessionId) return;
+    return registerSessionCleanup(sessionId);
+  }, [sessionId]);
 
   // Completed — show survey first, then completion screen
   if (phase === 'completed' && task && sessionId && role) {

@@ -73,7 +73,15 @@ export function Terminal({ sessionId, taskId, files: initialFiles, disabled, onC
             body: JSON.stringify({ files: fileMap }),
           }
         );
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        if (!resp.ok) {
+          // Surface 503 explicitly so the participant knows to retry, not
+          // that the platform is broken. Other 5xx surface generically.
+          throw new Error(
+            resp.status === 503
+              ? `Backend is at capacity (${resp.status}). Please wait a minute and refresh.`
+              : `HTTP ${resp.status}`
+          );
+        }
 
         const ws = new WebSocket(`${BACKEND_URL}/ws/terminal/${sessionId}`);
         wsRef.current = ws;
@@ -146,13 +154,16 @@ export function Terminal({ sessionId, taskId, files: initialFiles, disabled, onC
           if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', rows, cols }));
         });
 
-      } catch {
-        // Fallback: local echo terminal
+      } catch (err) {
+        // Fallback: local echo terminal. Surface the specific error so the
+        // participant can tell whether to refresh (503 / capacity) or
+        // report (backend down).
         setFallback(true);
         setStatus('disconnected');
         term.clear();
-        term.write('\x1b[33mSandbox unavailable — using local mode.\x1b[0m\r\n');
-        term.write('Commands are logged. Start backend for real execution.\r\n\r\n');
+        const msg = err instanceof Error ? err.message : 'Backend unreachable';
+        term.write(`\x1b[33m${msg}\x1b[0m\r\n`);
+        term.write('Local mode — commands are logged only, no real execution.\r\n\r\n');
         term.write('$ ');
 
         let line = '';
@@ -212,14 +223,52 @@ export function Terminal({ sessionId, taskId, files: initialFiles, disabled, onC
   );
 }
 
-// Grading API — call from views when submitting
+// Grading API — call from views when submitting. Graders can take up to ~2 min
+// (Go compile + race detector on CROSS1/GO1 hit ~90-120s), so allow generous
+// timeout instead of the browser default (which is indefinite on slow networks).
 export async function gradeSession(sessionId: string): Promise<{
   status: string; exit_code?: number; output?: string; score?: any;
 }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 180_000); // 3 minutes
   try {
-    const resp = await fetch(`${API_URL}/api/session/${sessionId}/grade`, { method: 'POST' });
+    const resp = await fetch(`${API_URL}/api/session/${sessionId}/grade`, {
+      method: 'POST',
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!resp.ok) {
+      return { status: 'error', output: `Grader returned HTTP ${resp.status}. Try again.` };
+    }
     return await resp.json();
-  } catch {
-    return { status: 'error', output: 'Backend not available' };
+  } catch (err) {
+    clearTimeout(timeout);
+    const msg = err instanceof Error && err.name === 'AbortError'
+      ? 'Grader timed out after 3 minutes. Your code may still be correct — try again.'
+      : 'Backend not reachable. Check your network and retry.';
+    return { status: 'error', output: msg };
   }
+}
+
+// Attempt best-effort session cleanup when the tab closes. Uses sendBeacon
+// (works during page unload where fetch() is unreliable). This frees the
+// container slot — without it, orphan sessions linger up to CONTAINER_TIMEOUT
+// (1 hour) and can exhaust MAX_CONTAINERS=20 during the study.
+export function registerSessionCleanup(sessionId: string) {
+  if (typeof window === 'undefined' || !sessionId) return () => {};
+  const handler = () => {
+    try {
+      // fetch with keepalive: true survives page unload in modern browsers.
+      // sendBeacon only supports POST, so we use fetch+keepalive for DELETE.
+      fetch(`${API_URL}/api/session/${sessionId}`, {
+        method: 'DELETE', keepalive: true,
+      }).catch(() => {});
+    } catch { /* best-effort */ }
+  };
+  window.addEventListener('beforeunload', handler);
+  window.addEventListener('pagehide', handler);
+  return () => {
+    window.removeEventListener('beforeunload', handler);
+    window.removeEventListener('pagehide', handler);
+  };
 }
