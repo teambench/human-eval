@@ -4,7 +4,7 @@ import { db } from '../firebase';
 import { Role, SessionMode, ChatMessage, FileEntry, TaskConfig, SessionState } from '../types';
 import { UserProfile } from '../views/LobbyView';
 
-const BACKEND_API = `https://${import.meta.env.VITE_BACKEND_HOST || 'premium-repair-personality-contained.trycloudflare.com'}`;
+const BACKEND_API = `https://${import.meta.env.VITE_BACKEND_HOST || 'bedroom-restricted-trackback-stanley.trycloudflare.com'}`;
 
 /**
  * Sanitize editor content before saving to the container. Browser pastes from
