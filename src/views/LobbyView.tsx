@@ -553,10 +553,13 @@ function TaskRow({ task, isSelected, onClick, solvedStatus }: {
   task: TaskEntry;
   isSelected: boolean;
   onClick: () => void;
-  solvedStatus?: { bestPartial: number; pass: boolean };
+  solvedStatus?: { bestPartial: number; pass: boolean; attempts?: number };
 }) {
   const solvedFull = solvedStatus?.pass === true;
-  const solvedPartial = !solvedFull && (solvedStatus?.bestPartial ?? 0) >= 0.7;
+  const bestPartial = solvedStatus?.bestPartial ?? 0;
+  const attempts = solvedStatus?.attempts ?? (solvedStatus ? 1 : 0);
+  // Any prior submission (graded at least once) gets a badge, not only ≥70%.
+  const attempted = !solvedFull && attempts > 0;
   return (
     <div
       onClick={onClick}
@@ -577,19 +580,23 @@ function TaskRow({ task, isSelected, onClick, solvedStatus }: {
           </span>
           <span style={{ color: '#cdd6f4', fontWeight: 600, fontSize: 13 }}>{task.taskId}</span>
           {solvedFull && (
-            <span title="Passed in a previous session" style={{
+            <span title={`Passed in a previous session (${attempts} attempt${attempts > 1 ? 's' : ''})`} style={{
               fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
               color: '#000', background: '#a6e3a1',
             }}>
               ✓ SOLVED
             </span>
           )}
-          {solvedPartial && (
-            <span title={`Best partial score: ${Math.round((solvedStatus?.bestPartial ?? 0) * 100)}%`} style={{
-              fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
-              color: '#000', background: '#f9e2af',
-            }}>
-              {Math.round((solvedStatus?.bestPartial ?? 0) * 100)}%
+          {attempted && (
+            <span
+              title={`Attempted ${attempts} time${attempts > 1 ? 's' : ''} — best score: ${Math.round(bestPartial * 100)}%`}
+              style={{
+                fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+                color: '#000',
+                background: bestPartial >= 0.7 ? '#f9e2af' : '#fab387',
+              }}
+            >
+              ATTEMPTED · {Math.round(bestPartial * 100)}%
             </span>
           )}
         </div>
