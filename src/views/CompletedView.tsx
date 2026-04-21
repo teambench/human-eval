@@ -25,15 +25,37 @@ export function CompletedView({ taskId, startTime, endTime, onExportLogs }: Comp
         <p style={{ color: '#a6adc8', fontSize: 15, marginBottom: 24 }}>
           {taskId} &mdash; completed in {minutes}m {seconds}s
         </p>
-        <button
-          onClick={onExportLogs}
-          style={{
-            background: '#89b4fa', color: '#000', border: 'none', borderRadius: 8,
-            padding: '12px 32px', fontWeight: 700, fontSize: 15, cursor: 'pointer',
-          }}
-        >
-          Download Session Logs (JSON)
-        </button>
+        <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+          <button
+            onClick={onExportLogs}
+            style={{
+              background: '#89b4fa', color: '#000', border: 'none', borderRadius: 8,
+              padding: '12px 24px', fontWeight: 700, fontSize: 15, cursor: 'pointer',
+            }}
+          >
+            Download Session Logs (JSON)
+          </button>
+          <button
+            onClick={() => {
+              // Clear per-task localStorage (keep profile) and reload to the
+              // task-picker. Without this the participant has to re-enter the
+              // profile form every single task.
+              try {
+                for (let i = 0; i < localStorage.length; i++) {
+                  const k = localStorage.key(i);
+                  if (k && k.startsWith('teambench_session_')) localStorage.removeItem(k);
+                }
+              } catch { /* ignore */ }
+              window.location.reload();
+            }}
+            style={{
+              background: '#a6e3a1', color: '#000', border: 'none', borderRadius: 8,
+              padding: '12px 24px', fontWeight: 700, fontSize: 15, cursor: 'pointer',
+            }}
+          >
+            Start Another Task
+          </button>
+        </div>
         <p style={{ color: '#585b70', fontSize: 12, marginTop: 16 }}>
           The JSON log contains all messages, file edits, commands, and timestamps
           for analysis. Please submit this file to the experiment coordinator.

@@ -435,6 +435,16 @@ async def list_files(session_id: str):
                            "conftest.py", "analysis_guidance.md")
                 or rel.endswith("_test.go")
             )
+            # Per-task overrides: tasks whose whole point is writing a test file
+            # must whitelist that file. Without this, TEST3's single required
+            # deliverable (`tests/test_integration.py`) is blocked by the default
+            # "tests/ is read-only" rule.
+            WRITABLE_OVERRIDES = {
+                "TEST3_integration": {"tests/test_integration.py"},
+            }
+            task_id = session.get("task_id", "")
+            if task_id in WRITABLE_OVERRIDES and rel in WRITABLE_OVERRIDES[task_id]:
+                read_only = False
             language = {
                 ".py": "python", ".js": "javascript", ".ts": "typescript",
                 ".tsx": "typescript", ".go": "go", ".sh": "shell",

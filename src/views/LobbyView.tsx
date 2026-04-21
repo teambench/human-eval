@@ -44,11 +44,34 @@ const TEAM_ROLES: { role: Role; label: string; color: string; icon: string; shor
 ];
 
 // ── Main Component ──
+const PROFILE_KEY = 'teambench_profile_v1';
+
+function loadPersistedProfile(): UserProfile {
+  try {
+    const raw = localStorage.getItem(PROFILE_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      // Minimal shape guard; fill missing fields with ''.
+      return {
+        name: p.name ?? '', email: p.email ?? '',
+        institution: p.institution ?? '', expertise: p.expertise ?? '',
+        yearsExp: p.yearsExp ?? '',
+      };
+    }
+  } catch { /* ignore */ }
+  return { name: '', email: '', institution: '', expertise: '', yearsExp: '' };
+}
+
 export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, participants }: LobbyViewProps) {
-  const [step, setStep] = useState<Step>('profile');
-  const [profile, setProfile] = useState<UserProfile>({
-    name: '', email: '', institution: '', expertise: '', yearsExp: '',
-  });
+  const persistedProfile = loadPersistedProfile();
+  const profileAlreadyValid =
+    persistedProfile.name.trim() && persistedProfile.email.trim() && persistedProfile.expertise;
+  // If we landed here after a completed task (?start_task=1) and have a saved
+  // profile, skip the Profile step so the user doesn't have to retype.
+  const initialStep: Step =
+    profileAlreadyValid ? 'task' : 'profile';
+  const [step, setStep] = useState<Step>(initialStep);
+  const [profile, setProfile] = useState<UserProfile>(persistedProfile);
   const [selectedTask, setSelectedTask] = useState<TaskEntry | null>(null);
   const [mode, setMode] = useState<SessionMode | null>(null);
   const [selectedRole, setSelectedRole] = useState<Role | null>(null);
@@ -160,7 +183,12 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
               </div>
 
               <button
-                onClick={() => profileValid && setStep('task')}
+                onClick={() => {
+                  if (!profileValid) return;
+                  // Persist so subsequent tasks skip this step.
+                  try { localStorage.setItem(PROFILE_KEY, JSON.stringify(profile)); } catch {}
+                  setStep('task');
+                }}
                 disabled={!profileValid}
                 style={{
                   marginTop: 28, width: '100%', padding: '12px', background: profileValid ? '#89b4fa' : '#333',
