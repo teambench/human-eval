@@ -4,7 +4,8 @@ import { db } from '../firebase';
 import { Role, SessionMode, ChatMessage, FileEntry, TaskConfig, SessionState } from '../types';
 import { UserProfile } from '../views/LobbyView';
 
-const BACKEND_API = `https://${import.meta.env.VITE_BACKEND_HOST || 'proc-usc-suggested-communicate.trycloudflare.com'}`;
+import { getHostSync } from '../lib/regionRouter';
+const BACKEND_API = `https://${import.meta.env.VITE_BACKEND_HOST || getHostSync()}`;
 
 /**
  * Sanitize editor content before saving to the container. Browser pastes from

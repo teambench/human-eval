@@ -8,6 +8,7 @@ import { OracleView } from './views/OracleView';
 import { CompletedView } from './views/CompletedView';
 import { SurveyView } from './views/SurveyView';
 import { registerSessionCleanup } from './components/Terminal';
+import { getRegion, getHostSync, setRegion, REGIONS, RegionId } from './lib/regionRouter';
 
 export default function App() {
   const {
@@ -28,10 +29,46 @@ export default function App() {
     return registerSessionCleanup(sessionId);
   }, [sessionId]);
 
+  // Kick off region auto-detect on first load. Most users never see the
+  // picker; this just ensures the cached region is set so subsequent
+  // fetches / WebSocket opens use the nearer backend.
+  const [currentRegion, setCurrentRegion] = useState<RegionId>(
+    (localStorage.getItem('teambench_region_v1') as RegionId) || 'sgp'
+  );
+  useEffect(() => { getRegion().then(setCurrentRegion); }, []);
+
+  // Floating region badge, always visible top-right. Uses portal-less
+  // absolute positioning; renders regardless of which view is active.
+  const regionBadge = (
+    <div style={{
+      position: 'fixed', top: 8, right: 8, zIndex: 9999,
+      background: '#1e1e2e', color: '#cdd6f4',
+      border: '1px solid #313244', borderRadius: 6,
+      padding: '4px 8px', fontSize: 10, fontFamily: 'monospace',
+      display: 'flex', alignItems: 'center', gap: 6,
+      boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
+    }}>
+      <span title="Backend server">{REGIONS[currentRegion].label}</span>
+      <select
+        value={currentRegion}
+        onChange={e => setRegion(e.target.value as RegionId)}
+        title="Switch backend region (reloads page)"
+        style={{
+          background: '#313244', color: '#cdd6f4', border: 'none',
+          borderRadius: 3, fontSize: 10, padding: '2px 4px', cursor: 'pointer',
+        }}
+      >
+        <option value="sgp">sgp</option>
+        <option value="nyc">nyc</option>
+      </select>
+    </div>
+  );
+
   // Completed — show survey first, then completion screen
   if (phase === 'completed' && task && sessionId && role) {
     if (!surveyCompleted) {
       return (
+      <>{regionBadge}
         <SurveyView
           sessionId={sessionId}
           taskId={task.taskId}
@@ -39,23 +76,23 @@ export default function App() {
           mode={mode}
           participants={participants}
           onComplete={() => setSurveyCompleted(true)}
-        />
+        /></>
       );
     }
     return (
-      <CompletedView
+      <>{regionBadge}<CompletedView
         taskId={task.taskId}
         startTime={startTime}
         endTime={endTime}
         onExportLogs={exportLogs}
-      />
+      /></>
     );
   }
 
   // Lobby / Waiting / Task selection
   if (!role || !task || phase === 'lobby') {
     return (
-      <LobbyView
+      <>{regionBadge}<LobbyView
         onJoin={(selectedTask, selectedRole, selectedMode, name, profile) =>
           join(selectedTask, selectedRole, selectedMode, name, profile)
         }
@@ -63,7 +100,7 @@ export default function App() {
         waitingForTeam={waitingForTeam}
         waitingSessionId={sessionId}
         participants={participants}
-      />
+      /></>
     );
   }
 
@@ -79,14 +116,14 @@ export default function App() {
 
   if (role === 'oracle') {
     return (
-      <OracleView
+      <>{regionBadge}<OracleView
         session={session}
         files={files}
         onUpdateFile={(path, content) => updateFile(path, content)}
         onPhaseChange={setPhase}
         onLog={addLog}
         saveStatus={saveStatus}
-      />
+      /></>
     );
   }
 
@@ -95,19 +132,19 @@ export default function App() {
   switch (role) {
     case 'planner':
       return (
-        <PlannerView session={session} files={files} messages={messages}
-          onSendMessage={onSend} onPhaseChange={setPhase} onLog={addLog} />
+        <>{regionBadge}<PlannerView session={session} files={files} messages={messages}
+          onSendMessage={onSend} onPhaseChange={setPhase} onLog={addLog} /></>
       );
     case 'executor':
       return (
-        <ExecutorView session={session} files={files} messages={messages}
+        <>{regionBadge}<ExecutorView session={session} files={files} messages={messages}
           onSendMessage={onSend} onUpdateFile={(p, c) => updateFile(p, c)}
-          onPhaseChange={setPhase} onLog={addLog} saveStatus={saveStatus} />
+          onPhaseChange={setPhase} onLog={addLog} saveStatus={saveStatus} /></>
       );
     case 'verifier':
       return (
-        <VerifierView session={session} files={files} messages={messages}
-          onSendMessage={onSend} onPhaseChange={setPhase} onLog={addLog} />
+        <>{regionBadge}<VerifierView session={session} files={files} messages={messages}
+          onSendMessage={onSend} onPhaseChange={setPhase} onLog={addLog} /></>
       );
   }
 }

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 
-// Backend URL — Cloudflare tunnel provides HTTPS/WSS for free
-const TUNNEL_HOST = import.meta.env.VITE_BACKEND_HOST || 'proc-usc-suggested-communicate.trycloudflare.com';
+// Backend URL — picked at page-load time by regionRouter (auto-detect
+// fastest of sgp/nyc, overridable via ?region= or localStorage).
+import { getHostSync } from '../lib/regionRouter';
+const TUNNEL_HOST = import.meta.env.VITE_BACKEND_HOST || getHostSync();
 const BACKEND_URL = `wss://${TUNNEL_HOST}`;
 const API_URL = `https://${TUNNEL_HOST}`;
 

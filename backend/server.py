@@ -59,12 +59,19 @@ _CONFTEST_SRC = (
 
 def _resolve_task_dir(task_id: str, seed: int) -> Optional[Path]:
     """
-    Resolve the on-disk task definition dir. RDS-style tasks use
-    tasks/{task_id}_seed{seed}/; others use tasks/{task_id}/.
-    Returns None if neither exists.
+    Resolve the on-disk task definition dir. RDS-style tasks split work
+    between two locations: tasks/{task_id}/ (thin shim holding only
+    grade.sh) and tasks/{task_id}_seed{seed}/ (has spec/brief/workspace/).
+    Prefer whichever candidate actually contains a workspace or spec, so
+    we don't accidentally pick the shim.
     """
     root = Path(TEAMBENCH_ROOT) / "tasks"
     candidates = [root / task_id, root / f"{task_id}_seed{seed}"]
+    # First pass: prefer a dir that actually has staging content.
+    for c in candidates:
+        if c.is_dir() and ((c / "workspace").is_dir() or (c / "spec.md").is_file()):
+            return c
+    # Fallback: any existing dir (e.g., grade.sh-only shim).
     for c in candidates:
         if c.is_dir():
             return c
