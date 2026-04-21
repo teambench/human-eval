@@ -5,7 +5,9 @@ import { Role, SessionMode, ChatMessage, FileEntry, TaskConfig, SessionState } f
 import { UserProfile } from '../views/LobbyView';
 
 import { getHostSync } from '../lib/regionRouter';
-const BACKEND_API = `https://${import.meta.env.VITE_BACKEND_HOST || getHostSync()}`;
+// Lazy host lookup — evaluated per-call so a region switch (or async
+// auto-detect completing) takes effect without a full page reload.
+const BACKEND_API = () => `https://${import.meta.env.VITE_BACKEND_HOST || getHostSync()}`;
 
 /**
  * Sanitize editor content before saving to the container. Browser pastes from
@@ -192,7 +194,7 @@ export function useFirebaseSession() {
     let cancelled = false;
     const fetchFiles = async (attempt = 0) => {
       try {
-        const r = await fetch(`${BACKEND_API}/api/session/${sessionId}/files`);
+        const r = await fetch(`${BACKEND_API()}/api/session/${sessionId}/files`);
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const data = await r.json();
         if (cancelled) return;
@@ -323,7 +325,7 @@ export function useFirebaseSession() {
     // Sync edits to the container workspace so terminal + grader see them.
     setSaveStatus('saving');
     try {
-      const r = await fetch(`${BACKEND_API}/api/session/${sessionId}/write-file`, {
+      const r = await fetch(`${BACKEND_API()}/api/session/${sessionId}/write-file`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path, content: clean }),

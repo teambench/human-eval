@@ -37,18 +37,21 @@ export default function App() {
   );
   useEffect(() => { getRegion().then(setCurrentRegion); }, []);
 
-  // Floating region badge, always visible top-right. Uses portal-less
-  // absolute positioning; renders regardless of which view is active.
+  // Floating region badge — bottom-right to avoid colliding with the
+  // progress bar and timer at the top of most views.
   const regionBadge = (
     <div style={{
-      position: 'fixed', top: 8, right: 8, zIndex: 9999,
+      position: 'fixed', bottom: 8, right: 8, zIndex: 9999,
       background: '#1e1e2e', color: '#cdd6f4',
       border: '1px solid #313244', borderRadius: 6,
       padding: '4px 8px', fontSize: 10, fontFamily: 'monospace',
       display: 'flex', alignItems: 'center', gap: 6,
       boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
+      opacity: 0.85,
     }}>
-      <span title="Backend server">{REGIONS[currentRegion].label}</span>
+      <span title="Backend server (auto-detected; lower-latency region wins)">
+        {REGIONS[currentRegion].label}
+      </span>
       <select
         value={currentRegion}
         onChange={e => setRegion(e.target.value as RegionId)}

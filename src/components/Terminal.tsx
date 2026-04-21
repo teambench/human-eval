@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 
-// Backend URL — picked at page-load time by regionRouter (auto-detect
-// fastest of sgp/nyc, overridable via ?region= or localStorage).
+// Backend URL — read lazily per use so auto-detected / user-switched
+// region applies without a page reload. If we evaluated these at module
+// load, we'd freeze the default sgp host before auto-detect resolves.
 import { getHostSync } from '../lib/regionRouter';
-const TUNNEL_HOST = import.meta.env.VITE_BACKEND_HOST || getHostSync();
-const BACKEND_URL = `wss://${TUNNEL_HOST}`;
-const API_URL = `https://${TUNNEL_HOST}`;
+const host = () => import.meta.env.VITE_BACKEND_HOST || getHostSync();
+const apiUrl = () => `https://${host()}`;
+const wsUrl = () => `wss://${host()}`;
 
 interface TerminalProps {
   sessionId?: string;
@@ -68,7 +69,7 @@ export function Terminal({ sessionId, taskId, files: initialFiles, disabled, onC
           for (const f of initialFiles) fileMap[f.path] = f.content;
         }
         const resp = await fetch(
-          `${API_URL}/api/session/${sessionId}/create?task_id=${encodeURIComponent(taskId || 'DEMO_api_fix')}`,
+          `${apiUrl()}/api/session/${sessionId}/create?task_id=${encodeURIComponent(taskId || 'DEMO_api_fix')}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -85,7 +86,7 @@ export function Terminal({ sessionId, taskId, files: initialFiles, disabled, onC
           );
         }
 
-        const ws = new WebSocket(`${BACKEND_URL}/ws/terminal/${sessionId}`);
+        const ws = new WebSocket(`${wsUrl()}/ws/terminal/${sessionId}`);
         wsRef.current = ws;
 
         let pingInterval: ReturnType<typeof setInterval> | null = null;
@@ -94,7 +95,7 @@ export function Terminal({ sessionId, taskId, files: initialFiles, disabled, onC
         const MAX_RECONNECT = 10;
 
         const connectWs = () => {
-          const ws = new WebSocket(`${BACKEND_URL}/ws/terminal/${sessionId}`);
+          const ws = new WebSocket(`${wsUrl()}/ws/terminal/${sessionId}`);
           wsRef.current = ws;
 
           ws.onopen = () => {
@@ -234,7 +235,7 @@ export async function gradeSession(sessionId: string): Promise<{
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 180_000); // 3 minutes
   try {
-    const resp = await fetch(`${API_URL}/api/session/${sessionId}/grade`, {
+    const resp = await fetch(`${apiUrl()}/api/session/${sessionId}/grade`, {
       method: 'POST',
       signal: controller.signal,
     });
@@ -262,7 +263,7 @@ export function registerSessionCleanup(sessionId: string) {
     try {
       // fetch with keepalive: true survives page unload in modern browsers.
       // sendBeacon only supports POST, so we use fetch+keepalive for DELETE.
-      fetch(`${API_URL}/api/session/${sessionId}`, {
+      fetch(`${apiUrl()}/api/session/${sessionId}`, {
         method: 'DELETE', keepalive: true,
       }).catch(() => {});
     } catch { /* best-effort */ }
