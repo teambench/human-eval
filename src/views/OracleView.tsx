@@ -15,10 +15,11 @@ interface OracleViewProps {
   onUpdateFile: (path: string, content: string) => void;
   onPhaseChange: (phase: SessionState['phase']) => void;
   onLog: (action: string, detail?: Record<string, unknown>) => void;
+  onLeave: () => void;
   saveStatus?: 'idle' | 'saving' | 'saved' | 'error';
 }
 
-export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog, saveStatus }: OracleViewProps) {
+export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog, onLeave, saveStatus }: OracleViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(files.find(f => !f.readOnly)?.path ?? null);
   const [leftTab, setLeftTab] = useState<'spec' | 'brief'>('spec');
   const [grading, setGrading] = useState(false);
@@ -74,6 +75,16 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
         padding: '8px 16px', background: '#1e1e2e', borderBottom: '2px solid #cba6f7',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            onClick={onLeave}
+            title="Leave this task and return to the lobby"
+            style={{
+              background: 'transparent', color: '#a6adc8', border: '1px solid #45475a',
+              borderRadius: 4, padding: '4px 10px', fontSize: 12, cursor: 'pointer',
+            }}
+          >
+            ← Back
+          </button>
           <span style={{
             background: '#cba6f7', color: '#fff', padding: '4px 12px',
             borderRadius: 4, fontWeight: 700, fontSize: 13,

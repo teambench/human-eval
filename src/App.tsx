@@ -16,8 +16,17 @@ export default function App() {
     messages, files, participants,
     startTime, endTime,
     joining, waitingForTeam, saveStatus,
-    join, sendMessage, updateFile, setPhase, exportLogs, addLog,
+    join, sendMessage, updateFile, setPhase, exportLogs, leaveSession, addLog,
   } = useFirebaseSession();
+
+  // Confirmation wrapper: guards against accidental clicks on Back.
+  // Team mode additionally warns about cancelling for teammates.
+  const confirmLeave = () => {
+    const msg = mode === 'team'
+      ? 'Leave this task? Your teammate will see the session as cancelled.'
+      : 'Leave this task? Unsaved progress will be lost.';
+    if (window.confirm(msg)) leaveSession();
+  };
 
   const [surveyCompleted, setSurveyCompleted] = useState(false);
 
@@ -125,6 +134,7 @@ export default function App() {
         onUpdateFile={(path, content) => updateFile(path, content)}
         onPhaseChange={setPhase}
         onLog={addLog}
+        onLeave={confirmLeave}
         saveStatus={saveStatus}
       /></>
     );
@@ -136,18 +146,21 @@ export default function App() {
     case 'planner':
       return (
         <>{regionBadge}<PlannerView session={session} files={files} messages={messages}
-          onSendMessage={onSend} onPhaseChange={setPhase} onLog={addLog} /></>
+          onSendMessage={onSend} onPhaseChange={setPhase} onLog={addLog}
+          onLeave={confirmLeave} /></>
       );
     case 'executor':
       return (
         <>{regionBadge}<ExecutorView session={session} files={files} messages={messages}
           onSendMessage={onSend} onUpdateFile={(p, c) => updateFile(p, c)}
-          onPhaseChange={setPhase} onLog={addLog} saveStatus={saveStatus} /></>
+          onPhaseChange={setPhase} onLog={addLog} onLeave={confirmLeave}
+          saveStatus={saveStatus} /></>
       );
     case 'verifier':
       return (
         <>{regionBadge}<VerifierView session={session} files={files} messages={messages}
-          onSendMessage={onSend} onPhaseChange={setPhase} onLog={addLog} /></>
+          onSendMessage={onSend} onPhaseChange={setPhase} onLog={addLog}
+          onLeave={confirmLeave} /></>
       );
   }
 }

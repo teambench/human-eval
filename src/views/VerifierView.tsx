@@ -14,9 +14,10 @@ interface VerifierViewProps {
   onSendMessage: (to: Role | 'all', content: string) => void;
   onPhaseChange: (phase: SessionState['phase']) => void;
   onLog: (action: string, detail?: Record<string, unknown>) => void;
+  onLeave: () => void;
 }
 
-export function VerifierView({ session, files, messages, onSendMessage, onPhaseChange, onLog }: VerifierViewProps) {
+export function VerifierView({ session, files, messages, onSendMessage, onPhaseChange, onLog, onLeave }: VerifierViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'spec' | 'files'>('spec');
   const [verdict, setVerdict] = useState<'pass' | 'fail' | ''>('');
@@ -46,6 +47,16 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
         padding: '8px 16px', background: '#1e1e2e', borderBottom: '2px solid #10b981',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            onClick={onLeave}
+            title="Leave this task and return to the lobby"
+            style={{
+              background: 'transparent', color: '#a6adc8', border: '1px solid #45475a',
+              borderRadius: 4, padding: '4px 10px', fontSize: 12, cursor: 'pointer',
+            }}
+          >
+            ← Back
+          </button>
           <span style={{
             background: '#10b981', color: '#000', padding: '4px 12px',
             borderRadius: 4, fontWeight: 700, fontSize: 13,

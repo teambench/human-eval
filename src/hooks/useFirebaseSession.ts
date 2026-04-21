@@ -407,12 +407,55 @@ export function useFirebaseSession() {
     URL.revokeObjectURL(url);
   }, [sessionId, task, mode, messages, files]);
 
+  const leaveSession = useCallback(async () => {
+    // "Back to lobby": abandon the current session and reset to the picker.
+    // For solo mode this frees the container slot immediately. For team mode
+    // we mark the session cancelled so teammates aren't stuck waiting.
+    const sid = sessionId;
+    const t = task;
+    const r = role;
+    const m = mode;
+    // Reset local state first so the UI navigates back instantly even if
+    // network calls below stall.
+    setSessionId(null);
+    setRole(null);
+    setTask(null);
+    setPhaseState('lobby');
+    setMessages([]);
+    setFiles([]);
+    setParticipants({});
+    setStartTime(null);
+    setEndTime(null);
+    setWaitingForTeam(false);
+    setSaveStatus('idle');
+    if (sid && r) {
+      addLog(sid, r, 'leave_session', { mode: m });
+      // Drop the resume cookie so a future join starts fresh.
+      if (t) {
+        try { localStorage.removeItem(`teambench_session_${t.taskId}_${r}_${m}`); } catch {}
+      }
+      // Team mode: signal cancellation so the partner sees it.
+      if (m === 'team') {
+        try {
+          await update(ref(db, `teambench/sessions/${sid}`), {
+            phase: 'cancelled', status: 'cancelled', endTime: Date.now(),
+          });
+        } catch { /* best-effort */ }
+      }
+      // Free the backend container slot (best-effort; works whether or not
+      // the session ever had a container).
+      try {
+        await fetch(`${BACKEND_API()}/api/session/${sid}`, { method: 'DELETE', keepalive: true });
+      } catch { /* ignore */ }
+    }
+  }, [sessionId, task, role, mode]);
+
   return {
     task, sessionId, role, mode, phase,
     messages: getVisibleMessages(), files: getVisibleFiles(),
     participants, startTime, endTime, joining, waitingForTeam,
     saveStatus,
-    join, sendMessage, updateFile, setPhase, exportLogs,
+    join, sendMessage, updateFile, setPhase, exportLogs, leaveSession,
     addLog: (action: string, detail?: Record<string, unknown>) => {
       if (sessionId && role) addLog(sessionId, role, action, detail ?? {});
     },

@@ -17,10 +17,11 @@ interface ExecutorViewProps {
   onUpdateFile: (path: string, content: string) => void;
   onPhaseChange: (phase: SessionState['phase']) => void;
   onLog: (action: string, detail?: Record<string, unknown>) => void;
+  onLeave: () => void;
   saveStatus?: 'idle' | 'saving' | 'saved' | 'error';
 }
 
-export function ExecutorView({ session, files, messages, onSendMessage, onUpdateFile, onPhaseChange, onLog, saveStatus }: ExecutorViewProps) {
+export function ExecutorView({ session, files, messages, onSendMessage, onUpdateFile, onPhaseChange, onLog, onLeave, saveStatus }: ExecutorViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(files.find(f => !f.readOnly)?.path ?? null);
   const [bottomTab, setBottomTab] = useState<'terminal' | 'brief'>('brief');
 
@@ -46,6 +47,16 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
         padding: '8px 16px', background: '#1e1e2e', borderBottom: '2px solid #f59e0b',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            onClick={onLeave}
+            title="Leave this task and return to the lobby"
+            style={{
+              background: 'transparent', color: '#a6adc8', border: '1px solid #45475a',
+              borderRadius: 4, padding: '4px 10px', fontSize: 12, cursor: 'pointer',
+            }}
+          >
+            ← Back
+          </button>
           <span style={{
             background: '#f59e0b', color: '#000', padding: '4px 12px',
             borderRadius: 4, fontWeight: 700, fontSize: 13,

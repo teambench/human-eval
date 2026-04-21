@@ -163,11 +163,19 @@ def _stage_task_workspace(task_id: str, workspace_dir: str, seed: int = DEFAULT_
             shutil.copytree(static_reports, reports_path, dirs_exist_ok=True)
             if (Path(reports_path) / "expected.json").is_file():
                 info["expected_written"] = True
-        # Grader + setup paths.
+        # Grader + setup paths. RDS-style tasks split the layout: staging
+        # (workspace/spec) lives in tasks/{id}_seed{N}/ but grade.sh lives in
+        # the tasks/{id}/ shim dir. Fall back to the shim when the resolved
+        # dir lacks a grader.
+        shim_dir = Path(TEAMBENCH_ROOT) / "tasks" / task_id
         if (task_dir / "grade.sh").is_file():
             info["grade_sh"] = str(task_dir / "grade.sh")
+        elif shim_dir.is_dir() and (shim_dir / "grade.sh").is_file():
+            info["grade_sh"] = str(shim_dir / "grade.sh")
         if (task_dir / "setup.sh").is_file():
             info["setup_sh"] = str(task_dir / "setup.sh")
+        elif shim_dir.is_dir() and (shim_dir / "setup.sh").is_file():
+            info["setup_sh"] = str(shim_dir / "setup.sh")
         # Task brief / spec for in-workspace display.
         for name in ("brief.md", "spec.md"):
             p = task_dir / name
