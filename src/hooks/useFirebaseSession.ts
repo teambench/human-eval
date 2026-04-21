@@ -157,14 +157,28 @@ export function useFirebaseSession() {
       setMessages(msgs);
     }));
 
-    unsubs.push(onValue(ref(db, `teambench/sessions/${sessionId}/files`), (snap) => {
-      if (!snap.exists()) return;
-      const data = snap.val() as Record<string, { content: string }>;
-      setFiles(prev => prev.map(f => {
-        const key = f.path.replace(/[.\/\[\]#$]/g, '_');
-        return data[key] ? { ...f, content: data[key].content } : f;
+    // CRITICAL: Only readers (planner, verifier) subscribe to file updates.
+    // The editor role (executor, oracle) must NOT apply Firebase echoes —
+    // under high-latency networks (e.g. participants outside the US hitting
+    // a Boston-hosted Firebase), subscription callbacks arrive out of order
+    // with local state updates. A stale echo of "a" can clobber the user's
+    // in-flight "ab" buffer, causing the reported symptom where typed
+    // characters disappear and the cursor jumps to the end of the file.
+    //
+    // For solo (oracle) and executor roles, the local React state is the
+    // single source of truth; the backend /write-file endpoint keeps the
+    // container workspace in sync. Firebase is still written (for logging
+    // and for other roles to observe), but we don't READ back.
+    if (role !== 'oracle' && role !== 'executor') {
+      unsubs.push(onValue(ref(db, `teambench/sessions/${sessionId}/files`), (snap) => {
+        if (!snap.exists()) return;
+        const data = snap.val() as Record<string, { content: string }>;
+        setFiles(prev => prev.map(f => {
+          const key = f.path.replace(/[.\/\[\]#$]/g, '_');
+          return data[key] ? { ...f, content: data[key].content } : f;
+        }));
       }));
-    }));
+    }
 
     return () => unsubs.forEach(u => u());
   }, [sessionId]);

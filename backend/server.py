@@ -71,6 +71,48 @@ def _resolve_task_dir(task_id: str, seed: int) -> Optional[Path]:
     return None
 
 
+def _apply_task_patches(task_id: str, ws_path: str) -> None:
+    """
+    Per-task in-place workspace fixes that address upstream-generator bugs
+    we cannot repair without breaking the ablation harness that consumes
+    the same generators.
+
+    Each entry reads and rewrites files under ws_path. Failures are logged
+    but not fatal — a task with a failed patch is no worse than unpatched.
+    """
+    try:
+        if task_id == "RDS13_smote_leakage":
+            # The generator's analysis.py reads ../datasets/credit_card_fraud.csv
+            # which is never shipped to the workspace. The collaborator reported
+            # the task as unsolvable. Inject a synthetic-data fallback so the
+            # script runs; the SMOTE-before-split bug (the actual task) is
+            # preserved so the participant still has something to fix.
+            ap = os.path.join(ws_path, "analysis.py")
+            if os.path.isfile(ap):
+                src = open(ap).read()
+                old_load = (
+                    'data_path = pathlib.Path(__file__).parent.parent / "datasets" / "credit_card_fraud.csv"\n'
+                    'df = pd.read_csv(data_path, comment="#")\n'
+                )
+                new_load = (
+                    '# NOTE: The original credit_card_fraud.csv is not shipped with the\n'
+                    '# human-eval workspace. Fallback: generate a synthetic imbalanced\n'
+                    '# dataset with the same shape (binary Class column, 5% positives).\n'
+                    'from sklearn.datasets import make_classification\n'
+                    '_X, _y = make_classification(\n'
+                    '    n_samples=2000, n_features=20, n_informative=10,\n'
+                    '    n_redundant=5, weights=[0.95, 0.05], random_state=42,\n'
+                    ')\n'
+                    'df = pd.DataFrame(_X, columns=[f"V{i+1}" for i in range(_X.shape[1])])\n'
+                    'df["Class"] = _y\n'
+                )
+                if old_load in src:
+                    src = src.replace(old_load, new_load)
+                    open(ap, "w").write(src)
+    except Exception as e:
+        print(f"[_apply_task_patches] {task_id}: {e}")
+
+
 def _stage_task_workspace(task_id: str, workspace_dir: str, seed: int = DEFAULT_SEED) -> dict:
     """
     Stage a task's workspace, reports, and submission directories.
@@ -162,6 +204,11 @@ def _stage_task_workspace(task_id: str, workspace_dir: str, seed: int = DEFAULT_
             with open(abs_path, "w", encoding="utf-8") as f:
                 f.write(content)
             info["files_written"] += 1
+
+        # Per-task post-stage patches: fix generator bugs that would make the
+        # task unsolvable without modifying the upstream generator (which is
+        # shared with the ablation harness).
+        _apply_task_patches(task_id, ws_path)
 
         # Write expected.json from the generator (ground truth).
         if getattr(generated, "expected", None) is not None:
@@ -435,16 +482,30 @@ async def list_files(session_id: str):
                            "conftest.py", "analysis_guidance.md")
                 or rel.endswith("_test.go")
             )
-            # Per-task overrides: tasks whose whole point is writing a test file
-            # must whitelist that file. Without this, TEST3's single required
-            # deliverable (`tests/test_integration.py`) is blocked by the default
-            # "tests/ is read-only" rule.
+            # Per-task writable overrides: tasks whose whole point is writing a
+            # test file must whitelist that file. Without this, TEST3's single
+            # required deliverable (tests/test_integration.py) is blocked by the
+            # default "tests/ is read-only" rule.
             WRITABLE_OVERRIDES = {
                 "TEST3_integration": {"tests/test_integration.py"},
             }
             task_id = session.get("task_id", "")
             if task_id in WRITABLE_OVERRIDES and rel in WRITABLE_OVERRIDES[task_id]:
                 read_only = False
+            # Per-task read-only overrides: some task specs explicitly say
+            # "do not modify X" but the default RO rule doesn't cover X. For
+            # example, CROSS1_api_contract ships a Go reference server that
+            # the spec says MUST NOT be modified — but .go files aren't on
+            # the default RO list. Lock those paths down here.
+            RO_OVERRIDES = {
+                "CROSS1_api_contract": lambda p: p.startswith("service/") or p == "service/go.mod",
+                "CROSS2_schema_evolution": lambda p: p.startswith("service_a/"),
+                "CRYPTO1_nonce_reuse": lambda p: p == "crypto_service/utils.py",
+                "GO1_concurrency_fix": lambda p: p.endswith("_test.go"),
+            }
+            ro_fn = RO_OVERRIDES.get(task_id)
+            if ro_fn and ro_fn(rel):
+                read_only = True
             language = {
                 ".py": "python", ".js": "javascript", ".ts": "typescript",
                 ".tsx": "typescript", ".go": "go", ".sh": "shell",
