@@ -165,8 +165,53 @@ const SOLO_TASK_ITEMS: SoloItem[] = [
   },
 ];
 
-// Counterfactual: would a teammate in this dimension have helped?
-const SOLO_COUNTERFACTUAL_PROMPT = 'On which dimensions would a teammate have been most valuable?';
+// Solo-mode counterfactual — concrete, role-mapped statements.
+//
+// Rationale: The earlier CATME-dimension counterfactual ("would a teammate
+// focused on 'expecting quality' have helped?") was tautological and confusing
+// in solo mode — CATME dimensions describe teammate BEHAVIOR, not task
+// difficulty. These replacement items each map to a concrete counterfactual
+// (would an extra person in a specific role have helped on THIS task) that
+// aligns 1:1 with the TeamBench Planner/Executor/Verifier role structure,
+// plus two orthogonal items (domain expertise, more time) to distinguish
+// "teamwork would've helped" from "I just needed more minutes".
+const SOLO_COUNTERFACTUAL: SoloItem[] = [
+  {
+    id: 'cf_planner',
+    label: 'Help planning the approach (Planner role)',
+    prompt: 'A second person to analyze the problem and lay out the solution approach would have been valuable on this task.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'cf_executor',
+    label: 'Help with implementation (Executor role)',
+    prompt: 'A second person to pair-program or suggest code would have been valuable on this task.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'cf_verifier',
+    label: 'Help verifying correctness (Verifier role)',
+    prompt: 'A second person to independently check my solution and catch mistakes would have been valuable on this task.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'cf_domain',
+    label: 'Domain expertise I lacked',
+    prompt: 'I lacked specific technical knowledge that someone with the right expertise could have provided.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'cf_time_only',
+    label: 'Time alone would have sufficed',
+    prompt: 'More time alone would have been enough — I did not need a teammate on this task.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+];
 
 export function SurveyView({ sessionId, taskId, role, mode, participants, onComplete }: SurveyViewProps) {
   const isTeam = mode === 'team';
@@ -213,7 +258,7 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
     totalRequired = targets.length * DIMENSIONS.length;
     totalFilled = Object.values(ratings).reduce((sum, dims) => sum + Object.keys(dims).length, 0);
   } else {
-    totalRequired = SOLO_TASK_ITEMS.length + DIMENSIONS.length;
+    totalRequired = SOLO_TASK_ITEMS.length + SOLO_COUNTERFACTUAL.length;
     totalFilled = Object.keys(taskItems).length + Object.keys(counterfactual).length;
   }
   const allFilled = totalFilled >= totalRequired;
@@ -378,35 +423,35 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
                 Counterfactual
               </span>
               <span style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4' }}>
-                {SOLO_COUNTERFACTUAL_PROMPT}
+                What kind of help would have been most valuable on this task?
               </span>
             </div>
             <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 16 }}>
-              For each dimension, rate how much a teammate would have helped (1 = not at all, 5 = a great deal).
+              Rate how much you agree with each statement (1 = strongly disagree, 5 = strongly agree).
             </div>
-            {DIMENSIONS.map((dim, i) => (
-              <div key={dim.id} style={{
-                paddingBottom: i < DIMENSIONS.length - 1 ? 16 : 0,
-                marginBottom: i < DIMENSIONS.length - 1 ? 16 : 0,
-                borderBottom: i < DIMENSIONS.length - 1 ? '1px solid #313244' : 'none',
+            {SOLO_COUNTERFACTUAL.map((item, i) => (
+              <div key={item.id} style={{
+                paddingBottom: i < SOLO_COUNTERFACTUAL.length - 1 ? 16 : 0,
+                marginBottom: i < SOLO_COUNTERFACTUAL.length - 1 ? 16 : 0,
+                borderBottom: i < SOLO_COUNTERFACTUAL.length - 1 ? '1px solid #313244' : 'none',
               }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4', marginBottom: 2 }}>
-                  {dim.label}
+                  {item.label}
                 </div>
                 <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 8 }}>
-                  A teammate focused on "{dim.label.toLowerCase()}" would have helped me...
+                  {item.prompt}
                 </div>
                 <LikertScale
-                  name={`counterfactual_${dim.id}`}
-                  value={counterfactual[dim.id] ?? null}
-                  onChange={v => setCounterfactual(prev => ({ ...prev, [dim.id]: v }))}
+                  name={`counterfactual_${item.id}`}
+                  value={counterfactual[item.id] ?? null}
+                  onChange={v => setCounterfactual(prev => ({ ...prev, [item.id]: v }))}
                 />
                 <div style={{
                   display: 'flex', justifyContent: 'space-between',
                   fontSize: 10, color: '#45475a', marginTop: 2, padding: '0 4px',
                 }}>
-                  <span>Not at all</span>
-                  <span>A great deal</span>
+                  <span>{item.anchorLow}</span>
+                  <span>{item.anchorHigh}</span>
                 </div>
               </div>
             ))}
