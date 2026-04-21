@@ -39,6 +39,24 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
     const result = await gradeSession(session.sessionId);
     setGradeResult(result);
     onLog('oracle_grade_result', { ...result });
+    // Persist per-task best score so the task picker can show a solved badge.
+    try {
+      const sc = result?.score || {};
+      const sec = sc.secondary || {};
+      const newPartial = typeof sec.partial_score === 'number' ? sec.partial_score : (sc.pass ? 1 : 0);
+      const key = 'teambench_solved_v1';
+      const raw = localStorage.getItem(key);
+      const store = raw ? JSON.parse(raw) : {};
+      const prev = store[session.taskConfig.taskId] || { bestPartial: 0, pass: false };
+      if (newPartial > prev.bestPartial || (sc.pass && !prev.pass)) {
+        store[session.taskConfig.taskId] = {
+          bestPartial: Math.max(newPartial, prev.bestPartial),
+          pass: sc.pass === true || prev.pass === true,
+          lastGradedISO: new Date().toISOString(),
+        };
+        localStorage.setItem(key, JSON.stringify(store));
+      }
+    } catch { /* ignore quota / parse errors */ }
     setGrading(false);
   };
 
@@ -122,22 +140,53 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
           )}
 
           {/* Grade result */}
-          {gradeResult && (
+          {gradeResult && (() => {
+            const sc = gradeResult.score || {};
+            const sec = sc.secondary || {};
+            const passed = sec.checks_passed;
+            const total = sec.checks_total;
+            const partial = sec.partial_score;
+            const isError = gradeResult.status === 'error';
+            const fullPass = sc.pass === true;
+            const partialPass = !fullPass && partial !== undefined && partial >= 0.7;
+            const headerColor = fullPass ? '#a6e3a1' : partialPass ? '#f9e2af' : '#f38ba8';
+            const headerLabel = isError ? 'Grading unavailable'
+              : fullPass ? 'PASSED'
+              : partialPass ? 'PARTIAL'
+              : 'FAILED';
+            const failures: string[] = Array.isArray(sc.failure_modes) ? sc.failure_modes : [];
+            return (
             <div style={{ padding: 12, background: '#1e1e2e', borderTop: '1px solid #333' }}>
-              <div style={{
-                fontSize: 13, fontWeight: 700, marginBottom: 6,
-                color: gradeResult.score?.pass ? '#a6e3a1' : '#f38ba8',
-              }}>
-                {gradeResult.score?.pass ? 'PASSED' : gradeResult.status === 'error' ? 'Grading unavailable' : 'FAILED'}
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 6 }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: headerColor }}>
+                  {headerLabel}
+                </span>
+                {partial !== undefined && (
+                  <span style={{ fontSize: 12, color: '#cdd6f4' }}>
+                    {Math.round(partial * 100)}%{passed !== undefined && total ? ` (${passed}/${total} checks)` : ''}
+                  </span>
+                )}
               </div>
-              {gradeResult.output && (
+              {failures.length > 0 && (
+                <div style={{
+                  fontSize: 11, color: '#f9e2af', marginBottom: 6,
+                  background: '#181825', padding: '4px 8px', borderRadius: 4,
+                }}>
+                  Failed checks: {failures.join(', ')}
+                </div>
+              )}
+              {gradeResult.output ? (
                 <pre style={{
                   fontSize: 11, color: '#a6adc8', background: '#181825',
-                  padding: 8, borderRadius: 4, maxHeight: 100, overflowY: 'auto',
+                  padding: 8, borderRadius: 4, maxHeight: 120, overflowY: 'auto',
                   whiteSpace: 'pre-wrap', margin: 0,
                 }}>
-                  {gradeResult.output.slice(-500)}
+                  {gradeResult.output.slice(-800)}
                 </pre>
+              ) : (
+                <div style={{ fontSize: 11, color: '#6c7086', fontStyle: 'italic' }}>
+                  (no grader output — check your session logs)
+                </div>
               )}
               <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                 <button
@@ -162,7 +211,8 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
                 </button>
               </div>
             </div>
-          )}
+            );
+          })()}
         </div>
 
         <Resizer direction="horizontal" onResize={useCallback((d: number) => setLeftWidth(w => Math.max(250, Math.min(600, w + d))), [])} />

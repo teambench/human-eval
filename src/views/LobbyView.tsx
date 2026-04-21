@@ -212,10 +212,19 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                 maxHeight: 420, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6,
                 paddingRight: 4,
               }}>
-                {TASK_CATALOG.map(task => (
-                  <TaskRow key={task.taskId} task={task} isSelected={selectedTask?.taskId === task.taskId}
-                    onClick={() => setSelectedTask(task)} />
-                ))}
+                {(() => {
+                  let solved: Record<string, { bestPartial: number; pass: boolean }> = {};
+                  try { solved = JSON.parse(localStorage.getItem('teambench_solved_v1') || '{}'); } catch {}
+                  return TASK_CATALOG.map(task => (
+                    <TaskRow
+                      key={task.taskId}
+                      task={task}
+                      isSelected={selectedTask?.taskId === task.taskId}
+                      solvedStatus={solved[task.taskId]}
+                      onClick={() => setSelectedTask(task)}
+                    />
+                  ));
+                })()}
               </div>
 
               <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
@@ -540,7 +549,14 @@ function FadeIn({ children }: { children: React.ReactNode }) {
   </div>;
 }
 
-function TaskRow({ task, isSelected, onClick }: { task: TaskEntry; isSelected: boolean; onClick: () => void }) {
+function TaskRow({ task, isSelected, onClick, solvedStatus }: {
+  task: TaskEntry;
+  isSelected: boolean;
+  onClick: () => void;
+  solvedStatus?: { bestPartial: number; pass: boolean };
+}) {
+  const solvedFull = solvedStatus?.pass === true;
+  const solvedPartial = !solvedFull && (solvedStatus?.bestPartial ?? 0) >= 0.7;
   return (
     <div
       onClick={onClick}
@@ -560,6 +576,22 @@ function TaskRow({ task, isSelected, onClick }: { task: TaskEntry; isSelected: b
             {task.difficulty.toUpperCase()}
           </span>
           <span style={{ color: '#cdd6f4', fontWeight: 600, fontSize: 13 }}>{task.taskId}</span>
+          {solvedFull && (
+            <span title="Passed in a previous session" style={{
+              fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+              color: '#000', background: '#a6e3a1',
+            }}>
+              ✓ SOLVED
+            </span>
+          )}
+          {solvedPartial && (
+            <span title={`Best partial score: ${Math.round((solvedStatus?.bestPartial ?? 0) * 100)}%`} style={{
+              fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+              color: '#000', background: '#f9e2af',
+            }}>
+              {Math.round((solvedStatus?.bestPartial ?? 0) * 100)}%
+            </span>
+          )}
         </div>
         <span style={{ color: '#585b70', fontSize: 11 }}>{task.category}</span>
       </div>
