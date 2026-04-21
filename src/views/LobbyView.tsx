@@ -22,7 +22,7 @@ interface LobbyViewProps {
   participants?: Record<string, { name: string; joinedAt: number }>;
 }
 
-type Step = 'profile' | 'task' | 'mode' | 'waiting';
+type Step = 'consent' | 'profile' | 'task' | 'mode' | 'waiting';
 
 const DIFFICULTY_COLORS: Record<string, string> = {
   easy: '#a6e3a1', medium: '#f9e2af', hard: '#f38ba8', expert: '#cba6f7',
@@ -46,6 +46,9 @@ const TEAM_ROLES: { role: Role; label: string; color: string; icon: string; shor
 
 // ── Main Component ──
 const PROFILE_KEY = 'teambench_profile_v1';
+// Bump the version suffix when the info sheet text changes — forces every
+// returning participant to re-acknowledge the updated notice.
+const CONSENT_KEY = 'teambench_consent_v1';
 
 function loadPersistedProfile(): UserProfile {
   try {
@@ -67,10 +70,18 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
   const persistedProfile = loadPersistedProfile();
   const profileAlreadyValid =
     persistedProfile.name.trim() && persistedProfile.email.trim() && persistedProfile.expertise;
+  // COUHES Exempt Category 2 requires an information sheet be presented to
+  // participants even though signed consent is waived. We gate the flow on
+  // a localStorage ack; returning participants skip once they've acknowledged.
+  const consentAcked = (() => {
+    try { return localStorage.getItem(CONSENT_KEY) === 'acked'; } catch { return false; }
+  })();
   // If we landed here after a completed task (?start_task=1) and have a saved
   // profile, skip the Profile step so the user doesn't have to retype.
   const initialStep: Step =
-    profileAlreadyValid ? 'task' : 'profile';
+    !consentAcked ? 'consent'
+    : profileAlreadyValid ? 'task'
+    : 'profile';
   const [step, setStep] = useState<Step>(initialStep);
   const [profile, setProfile] = useState<UserProfile>(persistedProfile);
   // Solved / attempted map, keyed by taskId. Source of truth is Firebase at
@@ -168,6 +179,87 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
 
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', padding: '24px 16px' }}>
         <div style={{ maxWidth: 640, width: '100%' }}>
+
+          {/* ── Step 0: Information Sheet (COUHES Exempt E-7676) ── */}
+          {step === 'consent' && (
+            <FadeIn>
+              <h2 style={{ color: '#cdd6f4', fontSize: 22, fontWeight: 700, margin: '0 0 8px', textAlign: 'center' }}>
+                Study Information
+              </h2>
+              <p style={{ color: '#585b70', fontSize: 12, textAlign: 'center', margin: '0 0 20px' }}>
+                Please read before continuing.
+              </p>
+
+              <div style={{
+                background: '#181825', border: '1px solid #313244', borderRadius: 10,
+                padding: 20, color: '#cdd6f4', fontSize: 13, lineHeight: 1.6,
+                maxHeight: 420, overflowY: 'auto',
+              }}>
+                <p style={{ margin: '0 0 10px' }}>
+                  <strong>Study:</strong> TeamBench — Evaluating Agent Collaboration via Role Separation
+                </p>
+                <p style={{ margin: '0 0 10px' }}>
+                  <strong>Principal Investigator:</strong> Hae Won Park, Program in Media Arts and Sciences, MIT<br/>
+                  <strong>Faculty Sponsor:</strong> Cynthia Breazeal<br/>
+                  <strong>IRB:</strong> MIT COUHES, Exempt ID E-7676 (Category 2)
+                </p>
+                <p style={{ margin: '0 0 10px' }}>
+                  <strong>What you will do:</strong> you will attempt one or more software-engineering
+                  tasks in a web-based coding interface. Each task takes up to about 30 minutes. You may
+                  do the task alone ("Solo") or together with other participants in assigned roles ("Team").
+                  After each task you will answer a short survey about your experience.
+                </p>
+                <p style={{ margin: '0 0 10px' }}>
+                  <strong>Data collected:</strong> name, email, institution, years of experience, area of
+                  expertise, the code and commands you write during the task, chat messages in team mode,
+                  grader scores, timing, and your survey responses. Your email is used to link your
+                  sessions across tasks and is not published or shared outside the research team.
+                </p>
+                <p style={{ margin: '0 0 10px' }}>
+                  <strong>Risks and benefits:</strong> there is no more than minimal risk. There is no
+                  direct benefit to you. Research results may inform how AI agents and people collaborate
+                  on software work.
+                </p>
+                <p style={{ margin: '0 0 10px' }}>
+                  <strong>Voluntary participation:</strong> participation is entirely voluntary. You may
+                  stop at any time by closing the browser or clicking "Back" inside a task; partial data
+                  up to that point may be retained unless you contact the team to have it deleted.
+                </p>
+                <p style={{ margin: '0 0 10px' }}>
+                  <strong>Confidentiality:</strong> data is stored on project infrastructure (Firebase,
+                  MIT servers). Published results report aggregates and de-identified excerpts only.
+                </p>
+                <p style={{ margin: '0 0 0' }}>
+                  <strong>Questions:</strong> contact the research team at <em>teambench@mit.edu</em>.
+                  For questions about your rights as a research participant, contact MIT COUHES at
+                  <em> couhes@mit.edu</em> or +1 (617) 253-6787.
+                </p>
+                <p style={{ margin: '12px 0 0', color: '#f9e2af', fontSize: 12 }}>
+                  <em>This is a placeholder — replace with the exact text approved by COUHES once the
+                  amendment is finalized. Bump CONSENT_KEY to "v2" to force all returning participants
+                  to re-acknowledge.</em>
+                </p>
+              </div>
+
+              <button
+                onClick={() => {
+                  try { localStorage.setItem(CONSENT_KEY, 'acked'); } catch {}
+                  setStep(profileAlreadyValid ? 'task' : 'profile');
+                }}
+                style={{
+                  marginTop: 20, width: '100%', padding: '12px', background: '#89b4fa',
+                  color: '#000', border: 'none', borderRadius: 8,
+                  fontWeight: 700, fontSize: 15, cursor: 'pointer',
+                }}
+              >
+                I have read this information — continue
+              </button>
+              <p style={{ color: '#585b70', fontSize: 11, textAlign: 'center', margin: '10px 0 0' }}>
+                Clicking continue indicates that you have read the information above. No signature
+                required under Exempt Category 2.
+              </p>
+            </FadeIn>
+          )}
 
           {/* ── Step 1: Profile ── */}
           {step === 'profile' && (
@@ -518,6 +610,7 @@ function ModeCard({ selected, onClick, color, title, subtitle, desc }: {
 
 function StepIndicator({ current }: { current: Step }) {
   const steps: { key: Step; label: string }[] = [
+    { key: 'consent', label: 'Info' },
     { key: 'profile', label: 'Profile' },
     { key: 'task', label: 'Task' },
     { key: 'mode', label: 'Mode' },
