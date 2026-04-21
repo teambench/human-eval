@@ -127,7 +127,18 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
             ))}
           </div>
           <div style={{ flex: 1, overflow: 'hidden' }}>
-            <MarkdownViewer content={leftTab === 'spec' ? session.taskConfig.specMd : session.taskConfig.briefMd} />
+            <MarkdownViewer
+              content={
+                leftTab === 'spec'
+                  ? session.taskConfig.specMd
+                  // Most briefs were written for Team Mode and contain lines like
+                  // "Follow the Planner's guidance." In Solo Mode there is no
+                  // Planner — prepend a banner that tells the participant the
+                  // Specification tab is the authoritative source and that the
+                  // brief text below assumes a team context.
+                  : `> **Solo Mode note:** you are playing all three roles (Planner, Executor, Verifier). This brief is the team-mode summary and may refer to "the Planner" — in solo mode, that analysis work is yours. The **Full Specification** tab has the complete, self-contained requirements; treat it as the source of truth.\n\n---\n\n${session.taskConfig.briefMd || ''}`
+              }
+            />
           </div>
 
           {/* Submit & Grade panel */}

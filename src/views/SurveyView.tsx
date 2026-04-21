@@ -185,8 +185,8 @@ const SOLO_COUNTERFACTUAL: SoloItem[] = [
   },
   {
     id: 'cf_executor',
-    label: 'Help with implementation (Executor role)',
-    prompt: 'A second person to pair-program or suggest code would have been valuable on this task.',
+    label: 'Help sharing the implementation workload',
+    prompt: 'A second person to split the coding (write parts of the fix in parallel, or take over while I read/tested) would have been valuable on this task.',
     anchorLow: 'Strongly disagree',
     anchorHigh: 'Strongly agree',
   },
@@ -241,6 +241,10 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
   const [taskItems, setTaskItems] = useState<Record<string, number>>({});
   const [counterfactual, setCounterfactual] = useState<Record<string, number>>({});
 
+  // ── Attention check: always required. Correct answer is the value
+  // referenced in the prompt; lets us filter out straight-line responders. ──
+  const [attention, setAttention] = useState<number | null>(null);
+
   const [challenge, setChallenge] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -251,15 +255,15 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
     }));
   };
 
-  // Validation
-  let totalRequired = 0;
-  let totalFilled = 0;
+  // Validation. The attention check adds one required item to both modes.
+  let totalRequired = 1;
+  let totalFilled = attention !== null ? 1 : 0;
   if (isTeam) {
-    totalRequired = targets.length * DIMENSIONS.length;
-    totalFilled = Object.values(ratings).reduce((sum, dims) => sum + Object.keys(dims).length, 0);
+    totalRequired += targets.length * DIMENSIONS.length;
+    totalFilled += Object.values(ratings).reduce((sum, dims) => sum + Object.keys(dims).length, 0);
   } else {
-    totalRequired = SOLO_TASK_ITEMS.length + SOLO_COUNTERFACTUAL.length;
-    totalFilled = Object.keys(taskItems).length + Object.keys(counterfactual).length;
+    totalRequired += SOLO_TASK_ITEMS.length + SOLO_COUNTERFACTUAL.length;
+    totalFilled += Object.keys(taskItems).length + Object.keys(counterfactual).length;
   }
   const allFilled = totalFilled >= totalRequired;
   const progress = Math.round((totalFilled / totalRequired) * 100);
@@ -277,7 +281,7 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
         else peerRatings[targetId] = dims;
       }
       surveyData = {
-        schema_version: '1.1',
+        schema_version: '1.2',
         instrument: 'CATME-lite',
         reference: 'Ohland et al. (2012) Academy of Management Learning & Education 11(4)',
         timestamp: Date.now(),
@@ -285,11 +289,12 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
         sessionId, taskId, mode,
         respondentRole: role,
         peerRatings, selfRating,
+        attentionCheck: { expected: 3, answer: attention, passed: attention === 3 },
         openEnded: { collaborationChallenge: challenge },
       };
     } else {
       surveyData = {
-        schema_version: '1.1',
+        schema_version: '1.2',
         instrument: 'TeamBench-Solo-Reflection',
         reference: 'NASA-TLX (Hart & Staveland, 1988) + CATME counterfactual',
         timestamp: Date.now(),
@@ -298,6 +303,7 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
         respondentRole: role,
         taskExperience: taskItems,                  // difficulty/effort/pressure/confidence
         counterfactualTeamValue: counterfactual,    // CATME dims rated as "would have helped"
+        attentionCheck: { expected: 3, answer: attention, passed: attention === 3 },
         openEnded: { collaborationChallenge: challenge },
       };
     }
@@ -510,6 +516,44 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
             ))}
           </div>
         ))}
+
+        {/* Attention check — appears in both solo and team surveys. The
+            prompt tells the respondent exactly which answer to pick, so a
+            careful reader always passes. Straight-liners (all 5s, all 3s,
+            random) will be flagged for the analyst to drop. */}
+        <div style={{
+          background: '#1e1e2e', border: '1px solid #313244',
+          borderRadius: 12, padding: 20, marginBottom: 16,
+        }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8,
+          }}>
+            <span style={{
+              fontSize: 11, fontWeight: 700, padding: '3px 8px',
+              borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.05em',
+              background: 'rgba(249, 226, 175, 0.15)', color: '#f9e2af',
+            }}>
+              Quality Check
+            </span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4' }}>
+              Please read carefully.
+            </span>
+          </div>
+          <div style={{ fontSize: 13, color: '#a6adc8', marginBottom: 10 }}>
+            To confirm you are reading the questions, please select <strong>3</strong> for this item.
+          </div>
+          <LikertScale
+            name="attention_check"
+            value={attention}
+            onChange={setAttention}
+          />
+          <div style={{
+            display: 'flex', justifyContent: 'space-between',
+            fontSize: 10, color: '#45475a', marginTop: 2, padding: '0 4px',
+          }}>
+            <span>1</span><span>5</span>
+          </div>
+        </div>
 
         {/* Open-ended */}
         <div style={{

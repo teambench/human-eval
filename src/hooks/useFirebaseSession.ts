@@ -5,6 +5,7 @@ import { Role, SessionMode, ChatMessage, FileEntry, TaskConfig, SessionState } f
 import { UserProfile } from '../views/LobbyView';
 
 import { getHostSync } from '../lib/regionRouter';
+import { groupForEmail, EXPERIMENT_ROUND } from '../lib/experimentGroup';
 // Lazy host lookup — evaluated per-call so a region switch (or async
 // auto-detect completing) takes effect without a full page reload.
 const BACKEND_API = () => `https://${import.meta.env.VITE_BACKEND_HOST || getHostSync()}`;
@@ -83,7 +84,7 @@ async function findOrCreateTeam(
   await set(ref(db, `teambench/sessions/${sessionId}`), {
     sessionId, taskId, mode: 'team',
     taskCategory: taskMeta.category, taskDifficulty: taskMeta.difficulty,
-    experimentRound: 1, experimentGroup: 'pilot',
+    experimentRound: EXPERIMENT_ROUND, experimentGroup: groupForEmail(profile?.email),
     phase: 'lobby', status: 'waiting',
     startTime: null, endTime: null,
     createdAt: now, createdAtISO: new Date(now).toISOString(),
@@ -110,7 +111,7 @@ async function createOracleSession(
   await set(ref(db, `teambench/sessions/${sessionId}`), {
     sessionId, taskId, mode: 'oracle',
     taskCategory: taskMeta.category, taskDifficulty: taskMeta.difficulty,
-    experimentRound: 1, experimentGroup: 'pilot',
+    experimentRound: EXPERIMENT_ROUND, experimentGroup: groupForEmail(profile?.email),
     phase: 'execution', status: 'active',
     startTime: now, startTimeISO: new Date(now).toISOString(),
     endTime: null, createdAt: now, createdAtISO: new Date(now).toISOString(),
@@ -338,6 +339,31 @@ export function useFirebaseSession() {
     }
   }, [sessionId, role]);
 
+  // Snapshot the container workspace into Firebase so post-hoc analysis
+  // can read terminal-authored artifacts (results.json, report.md, budget
+  // reports, etc.). Monaco-edited files are already in /files; this captures
+  // anything the participant wrote from the shell that never hit Firebase.
+  const persistFinalWorkspace = useCallback(async (sid: string) => {
+    try {
+      const r = await fetch(`${BACKEND_API()}/api/session/${sid}/files`);
+      if (!r.ok) return;
+      const data = await r.json();
+      const entries: Record<string, { content: string; language?: string }> = {};
+      for (const f of (data.files || []) as Array<{ path: string; content: string; language?: string }>) {
+        // Firebase keys can't contain ./[/]/#/$ — same scheme used by /files.
+        const key = f.path.replace(/[.\/\[\]#$]/g, '_');
+        entries[key] = { content: f.content, language: f.language };
+      }
+      await set(ref(db, `teambench/sessions/${sid}/finalWorkspace`), {
+        capturedAt: Date.now(),
+        capturedAtISO: new Date().toISOString(),
+        files: entries,
+      });
+    } catch {
+      /* best-effort — grader result is still authoritative for scoring */
+    }
+  }, []);
+
   const setPhase = useCallback(async (newPhase: SessionState['phase']) => {
     if (!sessionId || !role) return;
     const now = Date.now();
@@ -349,6 +375,10 @@ export function useFirebaseSession() {
       updates.endTimeISO = new Date(now).toISOString();
       updates.status = 'completed';
       if (startTime) updates.durationSeconds = Math.round((now - startTime) / 1000);
+      // Capture terminal-authored files BEFORE the session/container is torn
+      // down. Awaiting this is fine; the participant's "Finish" click already
+      // blocks on grading.
+      await persistFinalWorkspace(sessionId);
     } else {
       updates.status = 'active';
     }
@@ -434,6 +464,9 @@ export function useFirebaseSession() {
       if (t) {
         try { localStorage.removeItem(`teambench_session_${t.taskId}_${r}_${m}`); } catch {}
       }
+      // Snapshot terminal-authored files before we blow the container away.
+      // Even for a "Back" click mid-task we want to keep the partial work.
+      await persistFinalWorkspace(sid);
       // Team mode: signal cancellation so the partner sees it.
       if (m === 'team') {
         try {
