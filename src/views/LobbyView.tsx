@@ -3,6 +3,7 @@ import { ref, onValue } from 'firebase/database';
 import { db } from '../firebase';
 import { Role, SessionMode, TaskConfig } from '../types';
 import { TASK_CATALOG, TaskEntry, DEMO_TASK } from '../data/taskCatalog';
+import { subscribeToUserSolved, SolvedRecord, loadSolvedFromLocal } from '../lib/solvedTasks';
 
 // ── Types ──
 export interface UserProfile {
@@ -72,6 +73,14 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
     profileAlreadyValid ? 'task' : 'profile';
   const [step, setStep] = useState<Step>(initialStep);
   const [profile, setProfile] = useState<UserProfile>(persistedProfile);
+  // Solved / attempted map, keyed by taskId. Source of truth is Firebase at
+  // teambench/users/{sanitized_email}/solved, with localStorage as an instant
+  // cache so badges render immediately on page load.
+  const [userSolved, setUserSolved] = useState<Record<string, SolvedRecord>>(loadSolvedFromLocal());
+  useEffect(() => {
+    if (!profile.email?.trim()) return;
+    return subscribeToUserSolved(profile.email, setUserSolved);
+  }, [profile.email]);
   const [selectedTask, setSelectedTask] = useState<TaskEntry | null>(null);
   const [mode, setMode] = useState<SessionMode | null>(null);
   const [selectedRole, setSelectedRole] = useState<Role | null>(null);
@@ -212,19 +221,15 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                 maxHeight: 420, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6,
                 paddingRight: 4,
               }}>
-                {(() => {
-                  let solved: Record<string, { bestPartial: number; pass: boolean }> = {};
-                  try { solved = JSON.parse(localStorage.getItem('teambench_solved_v1') || '{}'); } catch {}
-                  return TASK_CATALOG.map(task => (
-                    <TaskRow
-                      key={task.taskId}
-                      task={task}
-                      isSelected={selectedTask?.taskId === task.taskId}
-                      solvedStatus={solved[task.taskId]}
-                      onClick={() => setSelectedTask(task)}
-                    />
-                  ));
-                })()}
+                {TASK_CATALOG.map(task => (
+                  <TaskRow
+                    key={task.taskId}
+                    task={task}
+                    isSelected={selectedTask?.taskId === task.taskId}
+                    solvedStatus={userSolved[task.taskId]}
+                    onClick={() => setSelectedTask(task)}
+                  />
+                ))}
               </div>
 
               <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>

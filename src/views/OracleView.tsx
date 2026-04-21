@@ -7,6 +7,7 @@ import { Timer } from '../components/Timer';
 import { Resizer } from '../components/Resizer';
 import { Onboarding, ORACLE_STEPS } from '../components/Onboarding';
 import { SessionState, FileEntry } from '../types';
+import { recordTaskAttempt } from '../lib/solvedTasks';
 
 interface OracleViewProps {
   session: SessionState;
@@ -39,29 +40,23 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
     const result = await gradeSession(session.sessionId);
     setGradeResult(result);
     onLog('oracle_grade_result', { ...result });
-    // Persist per-task status so the task picker can show an attempt badge.
-    // ALWAYS record the attempt (increment counter) regardless of outcome —
-    // the user wants to see every task they submitted, not only the ones
-    // scoring ≥70%.
+    // Persist attempt to Firebase (cross-device) + localStorage (instant cache).
+    // Every grade increments attempts, regardless of score.
     try {
       const sc = result?.score || {};
       const sec = sc.secondary || {};
       const newPartial = typeof sec.partial_score === 'number'
         ? sec.partial_score : (sc.pass ? 1 : 0);
-      const key = 'teambench_solved_v1';
-      const raw = localStorage.getItem(key);
-      const store = raw ? JSON.parse(raw) : {};
-      const prev = store[session.taskConfig.taskId] || {
-        bestPartial: 0, pass: false, attempts: 0,
-      };
-      store[session.taskConfig.taskId] = {
-        bestPartial: Math.max(newPartial, prev.bestPartial ?? 0),
-        pass: sc.pass === true || prev.pass === true,
-        attempts: (prev.attempts ?? 0) + 1,
-        lastGradedISO: new Date().toISOString(),
-      };
-      localStorage.setItem(key, JSON.stringify(store));
-    } catch { /* ignore quota / parse errors */ }
+      // Profile was persisted by LobbyView on first submit (teambench_profile_v1).
+      let email = '';
+      try {
+        const raw = localStorage.getItem('teambench_profile_v1');
+        email = raw ? (JSON.parse(raw).email || '') : '';
+      } catch { /* ignore */ }
+      await recordTaskAttempt(email, session.taskConfig.taskId, newPartial, sc.pass === true);
+    } catch (err) {
+      console.warn('persist attempt failed', err);
+    }
     setGrading(false);
   };
 
