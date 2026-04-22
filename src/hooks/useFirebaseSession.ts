@@ -185,7 +185,16 @@ export function useFirebaseSession() {
     }
 
     return () => unsubs.forEach(u => u());
-  }, [sessionId]);
+    // CRITICAL: role must be in the dep array. setSessionId + setRole are not
+    // guaranteed to batch into a single commit (they're called from an async
+    // join() — pre-React-18 batching would commit them separately). Without
+    // `role` here, the effect can fire while role===null, which makes the
+    // `role !== 'oracle' && role !== 'executor'` guard vacuously true and
+    // subscribes Oracle/Executor to the /files echo. Every keystroke then
+    // round-trips through Firebase and setFiles() clobbers Monaco's value
+    // mid-stroke — the user sees letters disappearing under fast typing,
+    // while slow typing "works" because echoes land before the next stroke.
+  }, [sessionId, role]);
 
   // Load workspace files from the backend container after session creation.
   // Generator-staged tasks don't ship files in the frontend; we fetch them here.
