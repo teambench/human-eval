@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { ref, push, set, get, update, onValue } from 'firebase/database';
 import { db } from '../firebase';
 import { Role, SessionMode, ChatMessage, FileEntry, TaskConfig, SessionState } from '../types';
@@ -138,6 +138,9 @@ export function useFirebaseSession() {
   const [joining, setJoining] = useState(false);
   const [waitingForTeam, setWaitingForTeam] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  // Tracks which sessionId has had its initial workspace fetched, so the
+  // fetchFiles effect stays idempotent regardless of task reference churn.
+  const fetchedForSessionRef = useRef<string | null>(null);
 
   // Subscribe to session
   useEffect(() => {
@@ -198,9 +201,22 @@ export function useFirebaseSession() {
 
   // Load workspace files from the backend container after session creation.
   // Generator-staged tasks don't ship files in the frontend; we fetch them here.
+  //
+  // CRITICAL: this runs exactly once per session. The deps used to include
+  // `task`, and inside the success path we called setTask(...) to inject
+  // spec.md / brief.md contents — but `setTask(prev => ({...prev, ...}))`
+  // creates a new task object every time, which re-fires the effect, which
+  // re-fetches files from the backend, which setFiles(entries) — and entries
+  // carries whatever the container filesystem has *at that moment*, typically
+  // one keystroke behind the user's in-flight edit. Result: every ~1 s the
+  // Monaco buffer got slammed back to a slightly-stale backend snapshot, and
+  // fast typing dropped characters. Guard with a ref so we only fetch once
+  // per sessionId, and drop `task` from deps.
   useEffect(() => {
     if (!sessionId || !task) return;
     if (task.files && task.files.length > 0) return;
+    if (fetchedForSessionRef.current === sessionId) return;
+    fetchedForSessionRef.current = sessionId;
     let cancelled = false;
     const fetchFiles = async (attempt = 0) => {
       try {
@@ -217,25 +233,39 @@ export function useFirebaseSession() {
         if (entries.length > 0) {
           setFiles(entries);
           // Populate specMd/briefMd from workspace files so the left panel
-          // shows the real task description instead of a placeholder.
+          // shows the real task description instead of a placeholder. Guard
+          // with an equality check so we don't churn the task reference when
+          // the content already matches (that would re-fire downstream effects).
           const specFile = entries.find(f => f.path === 'spec.md');
           const briefFile = entries.find(f => f.path === 'brief.md');
           if (specFile || briefFile) {
-            setTask(prev => prev ? {
-              ...prev,
-              specMd: specFile?.content || prev.specMd,
-              briefMd: briefFile?.content || prev.briefMd,
-            } : prev);
+            setTask(prev => {
+              if (!prev) return prev;
+              const nextSpec = specFile?.content || prev.specMd;
+              const nextBrief = briefFile?.content || prev.briefMd;
+              if (nextSpec === prev.specMd && nextBrief === prev.briefMd) return prev;
+              return { ...prev, specMd: nextSpec, briefMd: nextBrief };
+            });
           }
         }
-        else if (attempt < 10) setTimeout(() => fetchFiles(attempt + 1), 1000);
+        else if (attempt < 10) {
+          // Still waiting for the container to stage files — allow retry.
+          fetchedForSessionRef.current = null;
+          setTimeout(() => { fetchedForSessionRef.current = sessionId; fetchFiles(attempt + 1); }, 1000);
+        }
       } catch {
-        if (attempt < 10) setTimeout(() => fetchFiles(attempt + 1), 1000);
+        if (attempt < 10) {
+          fetchedForSessionRef.current = null;
+          setTimeout(() => { fetchedForSessionRef.current = sessionId; fetchFiles(attempt + 1); }, 1000);
+        }
       }
     };
     fetchFiles();
     return () => { cancelled = true; };
-  }, [sessionId, task]);
+    // Intentionally NOT depending on `task` — we only want to fetch once per
+    // sessionId. Task mutations (spec/brief injection) previously re-fired
+    // this effect and caused setFiles to stomp on the user's live edits.
+  }, [sessionId]);
 
   const join = useCallback(async (
     selectedTask: TaskConfig, selectedRole: Role, selectedMode: SessionMode,
