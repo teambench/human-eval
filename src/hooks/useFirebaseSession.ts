@@ -179,11 +179,33 @@ export function useFirebaseSession() {
     if (role !== 'oracle' && role !== 'executor') {
       unsubs.push(onValue(ref(db, `teambench/sessions/${sessionId}/files`), (snap) => {
         if (!snap.exists()) return;
-        const data = snap.val() as Record<string, { content: string }>;
-        setFiles(prev => prev.map(f => {
-          const key = f.path.replace(/[.\/\[\]#$]/g, '_');
-          return data[key] ? { ...f, content: data[key].content } : f;
-        }));
+        const data = snap.val() as Record<string, { content: string; language?: string; path?: string; readOnly?: boolean }>;
+        setFiles(prev => {
+          // Update existing entries AND surface any new files Firebase has
+          // that we don't yet. Previously we only mapped over `prev`, which
+          // meant Planner/Verifier couldn't see files that Executor created
+          // from the terminal (e.g. `touch new_file.py`) — the echo arrived
+          // but we ignored paths we hadn't already fetched.
+          const byKey: Record<string, FileEntry> = {};
+          for (const f of prev) {
+            const k = f.path.replace(/[.\/\[\]#$]/g, '_');
+            byKey[k] = f;
+          }
+          for (const [k, v] of Object.entries(data)) {
+            const existing = byKey[k];
+            if (existing) {
+              byKey[k] = { ...existing, content: v.content };
+            } else if (v.path) {
+              byKey[k] = {
+                path: v.path,
+                content: v.content,
+                language: v.language || '',
+                readOnly: v.readOnly ?? true,
+              };
+            }
+          }
+          return Object.values(byKey);
+        });
       }));
     }
 
@@ -200,71 +222,77 @@ export function useFirebaseSession() {
   }, [sessionId, role]);
 
   // Load workspace files from the backend container after session creation.
-  // Generator-staged tasks don't ship files in the frontend; we fetch them here.
   //
-  // CRITICAL: this runs exactly once per session. The deps used to include
-  // `task`, and inside the success path we called setTask(...) to inject
-  // spec.md / brief.md contents — but `setTask(prev => ({...prev, ...}))`
-  // creates a new task object every time, which re-fires the effect, which
-  // re-fetches files from the backend, which setFiles(entries) — and entries
-  // carries whatever the container filesystem has *at that moment*, typically
-  // one keystroke behind the user's in-flight edit. Result: every ~1 s the
-  // Monaco buffer got slammed back to a slightly-stale backend snapshot, and
-  // fast typing dropped characters. Guard with a ref so we only fetch once
-  // per sessionId, and drop `task` from deps.
+  // Team-mode quirk: only the Executor role opens the Terminal component,
+  // which in turn triggers /api/session/{sid}/create on the backend. Until
+  // that happens the container does not exist and /files returns empty.
+  // Planner / Verifier typically join BEFORE the Executor opens their
+  // terminal, so the initial fetch returns zero entries. We therefore poll
+  // until files appear (with a cap to avoid leaking a request loop forever).
+  //
+  // Deps: only [sessionId]. We do NOT depend on `task` — a prior version did,
+  // and inside the success path we called setTask(prev => ({...prev, ...}))
+  // which creates a fresh task reference and re-fires this effect, re-fetches,
+  // and calls setFiles() with the container's *current* content. That
+  // overwrote the user's live Monaco buffer every ~1 s and dropped fast
+  // keystrokes. The once-per-sessionId ref guard below keeps this idempotent
+  // even if the effect ever re-evaluates for some other reason.
   useEffect(() => {
     if (!sessionId || !task) return;
     if (task.files && task.files.length > 0) return;
     if (fetchedForSessionRef.current === sessionId) return;
     fetchedForSessionRef.current = sessionId;
+
     let cancelled = false;
-    const fetchFiles = async (attempt = 0) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const fetchOnce = async (): Promise<boolean> => {
       try {
         const r = await fetch(`${BACKEND_API()}/api/session/${sessionId}/files`);
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        if (!r.ok) return false;
         const data = await r.json();
-        if (cancelled) return;
         const entries: FileEntry[] = (data.files || []).map((f: any) => ({
           path: f.path,
           content: f.content,
           language: f.language,
           readOnly: f.readOnly,
         }));
-        if (entries.length > 0) {
-          setFiles(entries);
-          // Populate specMd/briefMd from workspace files so the left panel
-          // shows the real task description instead of a placeholder. Guard
-          // with an equality check so we don't churn the task reference when
-          // the content already matches (that would re-fire downstream effects).
-          const specFile = entries.find(f => f.path === 'spec.md');
-          const briefFile = entries.find(f => f.path === 'brief.md');
-          if (specFile || briefFile) {
-            setTask(prev => {
-              if (!prev) return prev;
-              const nextSpec = specFile?.content || prev.specMd;
-              const nextBrief = briefFile?.content || prev.briefMd;
-              if (nextSpec === prev.specMd && nextBrief === prev.briefMd) return prev;
-              return { ...prev, specMd: nextSpec, briefMd: nextBrief };
-            });
-          }
+        if (entries.length === 0) return false;
+        if (cancelled) return true;
+        setFiles(entries);
+        const specFile = entries.find(f => f.path === 'spec.md');
+        const briefFile = entries.find(f => f.path === 'brief.md');
+        if (specFile || briefFile) {
+          setTask(prev => {
+            if (!prev) return prev;
+            const nextSpec = specFile?.content || prev.specMd;
+            const nextBrief = briefFile?.content || prev.briefMd;
+            if (nextSpec === prev.specMd && nextBrief === prev.briefMd) return prev;
+            return { ...prev, specMd: nextSpec, briefMd: nextBrief };
+          });
         }
-        else if (attempt < 10) {
-          // Still waiting for the container to stage files — allow retry.
-          fetchedForSessionRef.current = null;
-          setTimeout(() => { fetchedForSessionRef.current = sessionId; fetchFiles(attempt + 1); }, 1000);
-        }
+        return true;
       } catch {
-        if (attempt < 10) {
-          fetchedForSessionRef.current = null;
-          setTimeout(() => { fetchedForSessionRef.current = sessionId; fetchFiles(attempt + 1); }, 1000);
-        }
+        return false;
       }
     };
-    fetchFiles();
-    return () => { cancelled = true; };
-    // Intentionally NOT depending on `task` — we only want to fetch once per
-    // sessionId. Task mutations (spec/brief injection) previously re-fired
-    // this effect and caused setFiles to stomp on the user's live edits.
+
+    const loop = async (attempt: number) => {
+      if (cancelled) return;
+      const ok = await fetchOnce();
+      if (ok || cancelled) return;
+      // Cap at 120 attempts = ~2 min of polling at 1 s intervals. Covers
+      // the waiting-room + container-boot worst case without running
+      // forever if something is genuinely broken.
+      if (attempt >= 120) return;
+      timer = setTimeout(() => loop(attempt + 1), 1000);
+    };
+    loop(0);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [sessionId]);
 
   const join = useCallback(async (

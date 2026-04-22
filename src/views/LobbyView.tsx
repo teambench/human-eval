@@ -469,6 +469,13 @@ function WaitingRoom({ sessionId, participants: initialParticipants, taskId, onC
     return () => clearInterval(timer);
   }, []);
 
+  // Auto-kick after 15 minutes. If teammates never show, keeping the user
+  // frozen in the waiting room is worse than dropping them back to the
+  // lobby where they can pick a different task or switch to Solo Mode.
+  useEffect(() => {
+    if (waitSeconds >= 900 && onCancel) onCancel();
+  }, [waitSeconds, onCancel]);
+
   useEffect(() => {
     const unsub = onValue(ref(db, `teambench/sessions/${sessionId}/participants`), (snap) => {
       if (snap.exists()) setParticipants(snap.val());
@@ -545,7 +552,8 @@ function WaitingRoom({ sessionId, participants: initialParticipants, taskId, onC
         {waitSeconds > 60 && (
           <p style={{ color: '#f9e2af', fontSize: 12, marginTop: 12 }}>
             Waiting for {Math.floor(waitSeconds / 60)}m {waitSeconds % 60}s...
-            {waitSeconds > 180 && ' Consider switching to Solo Mode if teammates are unavailable.'}
+            {waitSeconds > 180 && waitSeconds <= 900 && ' Consider switching to Solo Mode if teammates are unavailable.'}
+            {waitSeconds > 840 && waitSeconds <= 900 && ` Auto-leaving in ${900 - waitSeconds}s.`}
           </p>
         )}
 
