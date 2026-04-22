@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { ChatPanel } from '../components/ChatPanel';
 import { MarkdownViewer } from '../components/MarkdownViewer';
 import { FileTree } from '../components/FileTree';
@@ -23,6 +23,16 @@ interface ExecutorViewProps {
 
 export function ExecutorView({ session, files, messages, onSendMessage, onUpdateFile, onPhaseChange, onLog, onLeave, saveStatus }: ExecutorViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(files.find(f => !f.readOnly)?.path ?? null);
+  // Auto-pick the first editable file once files arrive. In team mode files
+  // are fetched AFTER the component mounts (waiting for Executor's container
+  // to come up), so the initializer above runs on an empty list and leaves
+  // selectedFile=null. Without this effect the file tree could be populated
+  // but the editor pane would just say "Select a file to edit" forever.
+  useEffect(() => {
+    if (selectedFile) return;
+    const pick = files.find(f => !f.readOnly) ?? files[0];
+    if (pick) setSelectedFile(pick.path);
+  }, [files, selectedFile]);
   const [bottomTab, setBottomTab] = useState<'terminal' | 'brief'>('brief');
 
   // Resizable panel sizes

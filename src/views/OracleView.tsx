@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { MarkdownViewer } from '../components/MarkdownViewer';
 import { FileTree } from '../components/FileTree';
 import { CodeEditor } from '../components/CodeEditor';
@@ -59,6 +59,13 @@ function stripTeamNarrative(md: string): string {
 
 export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog, onLeave, saveStatus }: OracleViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(files.find(f => !f.readOnly)?.path ?? null);
+  // See ExecutorView: files load after mount, so the initializer often runs
+  // on an empty list. This backstop picks an editable file once they arrive.
+  useEffect(() => {
+    if (selectedFile) return;
+    const pick = files.find(f => !f.readOnly) ?? files[0];
+    if (pick) setSelectedFile(pick.path);
+  }, [files, selectedFile]);
   const [grading, setGrading] = useState(false);
   const [gradeResult, setGradeResult] = useState<{ status: string; score?: any; output?: string } | null>(null);
   const [finished, setFinished] = useState(false);
