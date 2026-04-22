@@ -19,9 +19,33 @@ interface OracleViewProps {
   saveStatus?: 'idle' | 'saving' | 'saved' | 'error';
 }
 
+/**
+ * Several spec.md files were authored for Team Mode and contain narrative
+ * that assumes a Planner/Executor/Verifier split. Those asides are harmless
+ * to the Planner (the intended audience) but confusing to an Oracle who is
+ * playing all three roles.
+ *
+ * This scrub is conservative — it only removes known team-narrative
+ * patterns, not content. Task requirements and acceptance criteria are
+ * untouched. Known patterns handled:
+ *   - "(Planner Only)" suffix in H1 titles (several GH-style tasks)
+ *   - "[Code changes omitted — Planner should analyze the issue and guide
+ *     the Executor]" placeholders (GH103)
+ *   - Inline sentences like "The executor only sees the brief; the planner
+ *     has this full analysis." (GO1, API1)
+ */
+function stripTeamNarrative(md: string): string {
+  return md
+    .replace(/\s*—?\s*Full Specification\s*\(Planner Only\)\s*/gi, ' — Full Specification')
+    .replace(/\s*\(Planner Only\)\s*/gi, '')
+    .replace(/^\s*\[Code changes omitted[^\]]*?(?:Planner|Executor)[^\]]*\]\s*$/gim, '')
+    .replace(/The [Ee]xecutor only (?:sees|receives) the brief[^.\n]*\.\s*/g, '')
+    .replace(/[Tt]he [Pp]lanner (?:must read|has this full analysis)[^.\n]*\.\s*/g, '')
+    .replace(/[Oo]nly the [Pp]lanner who reads [^.\n]*\.\s*/g, '');
+}
+
 export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog, onLeave, saveStatus }: OracleViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(files.find(f => !f.readOnly)?.path ?? null);
-  const [leftTab, setLeftTab] = useState<'spec' | 'brief'>('spec');
   const [grading, setGrading] = useState(false);
   const [gradeResult, setGradeResult] = useState<{ status: string; score?: any; output?: string } | null>(null);
   const [finished, setFinished] = useState(false);
@@ -110,34 +134,20 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {/* Left panel: Spec / Brief */}
         <div style={{ width: leftWidth, minWidth: 250, maxWidth: 600, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', background: '#181825', borderBottom: '1px solid #333' }}>
-            {(['spec', 'brief'] as const).map(tab => (
-              <button
-                key={tab}
-                onClick={() => setLeftTab(tab)}
-                style={{
-                  flex: 1, padding: '8px 16px', background: leftTab === tab ? '#1e1e2e' : 'transparent',
-                  color: leftTab === tab ? '#cdd6f4' : '#888', border: 'none',
-                  borderBottom: leftTab === tab ? '2px solid #cba6f7' : '2px solid transparent',
-                  cursor: 'pointer', fontSize: 13, fontWeight: 600,
-                }}
-              >
-                {tab === 'spec' ? 'Full Specification' : 'Brief'}
-              </button>
-            ))}
+          {/* Solo mode only ever shows the full Specification — we used to
+              also render a "Brief" tab, but briefs are written for Team Mode
+              and frequently instruct the reader to "Follow the Planner's
+              guidance." That's nonsense in solo mode where no Planner exists.
+              The full spec is self-contained and role-agnostic. */}
+          <div style={{
+            padding: '8px 16px', background: '#181825', borderBottom: '1px solid #333',
+            color: '#cdd6f4', fontSize: 13, fontWeight: 600,
+          }}>
+            Task Specification
           </div>
           <div style={{ flex: 1, overflow: 'hidden' }}>
             <MarkdownViewer
-              content={
-                leftTab === 'spec'
-                  ? session.taskConfig.specMd
-                  // Most briefs were written for Team Mode and contain lines like
-                  // "Follow the Planner's guidance." In Solo Mode there is no
-                  // Planner — prepend a banner that tells the participant the
-                  // Specification tab is the authoritative source and that the
-                  // brief text below assumes a team context.
-                  : `> **Solo Mode note:** you are playing all three roles (Planner, Executor, Verifier). This brief is the team-mode summary and may refer to "the Planner" — in solo mode, that analysis work is yours. The **Full Specification** tab has the complete, self-contained requirements; treat it as the source of truth.\n\n---\n\n${session.taskConfig.briefMd || ''}`
-              }
+              content={stripTeamNarrative(session.taskConfig.specMd || '')}
             />
           </div>
 
