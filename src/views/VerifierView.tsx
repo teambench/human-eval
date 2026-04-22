@@ -120,6 +120,32 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
             )}
           </div>
 
+          {/* Phase-gating banner for non-verification phases. Without this,
+              the Verifier sits and waits without any cue as to what the
+              other roles are doing. */}
+          {!canVerify && session.phase === 'planning' && (
+            <div style={{
+              padding: '10px 14px', background: 'rgba(99,102,241,0.12)',
+              borderTop: '1px solid rgba(99,102,241,0.3)',
+              color: '#cdd6f4', fontSize: 12, lineHeight: 1.5,
+            }}>
+              <strong style={{ color: '#a5b4fc' }}>Planner is analyzing.</strong>{' '}
+              You can read the Specification now. Once the Executor marks the task done, you'll
+              review their work and submit a verdict.
+            </div>
+          )}
+          {!canVerify && session.phase === 'execution' && (
+            <div style={{
+              padding: '10px 14px', background: 'rgba(245,158,11,0.12)',
+              borderTop: '1px solid rgba(245,158,11,0.3)',
+              color: '#cdd6f4', fontSize: 12, lineHeight: 1.5,
+            }}>
+              <strong style={{ color: '#fbbf24' }}>Executor is implementing.</strong>{' '}
+              Follow along in the Workspace tab — files update in real time. You can ask
+              clarifying questions via chat. You'll submit your verdict after the Executor
+              marks done.
+            </div>
+          )}
           {/* Verdict panel */}
           {canVerify && (
             <div style={{

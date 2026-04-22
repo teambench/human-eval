@@ -113,6 +113,9 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
           {/* Submit Plan */}
           {session.phase === 'planning' && (
             <div style={{ padding: 12, background: '#1e1e2e', borderTop: '1px solid #333', textAlign: 'center' }}>
+              <p style={{ color: '#6c7086', fontSize: 11, margin: '0 0 8px' }}>
+                Share your analysis + plan via chat first, then click below to hand off to the Executor.
+              </p>
               <button
                 onClick={handleSubmitPlan}
                 style={{
@@ -122,6 +125,28 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
               >
                 Submit Plan & Advance to Execution
               </button>
+            </div>
+          )}
+          {/* Phase-gating banner for post-planning phases so the Planner
+              knows their active work is done and what to do next. */}
+          {session.phase === 'execution' && (
+            <div style={{
+              padding: '10px 14px', background: 'rgba(245,158,11,0.12)',
+              borderTop: '1px solid rgba(245,158,11,0.3)',
+              color: '#cdd6f4', fontSize: 12, lineHeight: 1.5,
+            }}>
+              <strong style={{ color: '#fbbf24' }}>Executor is implementing.</strong>{' '}
+              Your plan has been handed off. Answer follow-up questions via chat if the Executor gets stuck.
+            </div>
+          )}
+          {session.phase === 'verification' && (
+            <div style={{
+              padding: '10px 14px', background: 'rgba(16,185,129,0.1)',
+              borderTop: '1px solid rgba(16,185,129,0.3)',
+              color: '#cdd6f4', fontSize: 12, lineHeight: 1.5,
+            }}>
+              <strong style={{ color: '#86efac' }}>Verifier is reviewing.</strong>{' '}
+              The task is being graded. You can continue to chat if the Verifier flags something that needs discussion.
             </div>
           )}
         </div>

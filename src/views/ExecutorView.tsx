@@ -124,6 +124,33 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
             </div>
           )}
 
+          {/* Phase-gating banner: explain WHY the editor is read-only when
+              it's not because of the file itself. Without this, the Executor
+              tries to type, Monaco silently refuses, and they assume the tool
+              is broken. */}
+          {!canEdit && session.phase === 'planning' && (
+            <div style={{
+              padding: '10px 14px', background: 'rgba(99,102,241,0.12)',
+              borderBottom: '1px solid rgba(99,102,241,0.3)',
+              color: '#cdd6f4', fontSize: 12, lineHeight: 1.5,
+            }}>
+              <strong style={{ color: '#a5b4fc' }}>Waiting for the Planner.</strong>{' '}
+              The Planner is analyzing the spec and will post an execution plan via chat.
+              You'll be able to edit files and use the terminal once they click <em>Submit Plan</em>.
+              In the meantime, read the <em>Task Brief</em> tab and follow the chat.
+            </div>
+          )}
+          {!canEdit && session.phase === 'verification' && (
+            <div style={{
+              padding: '10px 14px', background: 'rgba(16,185,129,0.1)',
+              borderBottom: '1px solid rgba(16,185,129,0.3)',
+              color: '#cdd6f4', fontSize: 12, lineHeight: 1.5,
+            }}>
+              <strong style={{ color: '#86efac' }}>Handed off to the Verifier.</strong>{' '}
+              You marked the task done. The Verifier is reviewing. If they send it back, the editor will become
+              writable again.
+            </div>
+          )}
           {/* Editor */}
           <div style={{ flex: 1, overflow: 'hidden' }}>
             {currentFile ? (
@@ -135,7 +162,11 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
                 onChange={canEdit && !currentFile.readOnly ? v => onUpdateFile(currentFile.path, v) : undefined}
               />
             ) : (
-              <div style={{ padding: 24, color: '#888' }}>Select a file to edit</div>
+              <div style={{ padding: 24, color: '#888' }}>
+                {!canEdit && session.phase === 'planning'
+                  ? 'Files will appear here once the Planner submits the plan.'
+                  : 'Select a file to edit'}
+              </div>
             )}
           </div>
 
