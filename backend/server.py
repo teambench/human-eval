@@ -88,6 +88,36 @@ def _apply_task_patches(task_id: str, ws_path: str) -> None:
     but not fatal — a task with a failed patch is no worse than unpatched.
     """
     try:
+        if task_id == "RDS10_survey_analysis":
+            # The generator only ships data/stackoverflow.csv + requirements.
+            # The participant is expected to PRODUCE analysis.py, results.json,
+            # and report.md — but Monaco cannot open a file that does not
+            # exist, so there was no way to start typing without first
+            # creating the file in the terminal. Stub the three expected
+            # deliverables so the file tree surfaces them as editable.
+            stubs = {
+                "analysis.py": (
+                    '"""Stack Overflow Developer Survey — remote work vs job satisfaction.\n\n'
+                    'Write a regression analysis here. Read data/stackoverflow.csv, run a\n'
+                    'model that regresses job satisfaction on a remote-work indicator while\n'
+                    'controlling for ConvertedCompYearly and employment type, then write\n'
+                    'your effect estimates (with uncertainty) to results.json and a short\n'
+                    'findings-and-limitations write-up to report.md.\n"""\n\n'
+                    '# import pandas as pd, statsmodels.formula.api as smf, json, pathlib\n'
+                    '# df = pd.read_csv("data/stackoverflow.csv")\n'
+                    '# ...\n'
+                    '# pathlib.Path("results.json").write_text(json.dumps({...}))\n'
+                    '# pathlib.Path("report.md").write_text("# Findings\\n\\n...")\n'
+                ),
+                "results.json": "{}\n",
+                "report.md": "# RDS10 Findings\n\n(Fill in after running analysis.py.)\n",
+            }
+            for rel, content in stubs.items():
+                p = os.path.join(ws_path, rel)
+                if not os.path.isfile(p):
+                    os.makedirs(os.path.dirname(p) or ws_path, exist_ok=True)
+                    with open(p, "w", encoding="utf-8") as f:
+                        f.write(content)
         if task_id == "RDS13_smote_leakage":
             # The generator's analysis.py reads ../datasets/credit_card_fraud.csv
             # which is never shipped to the workspace. The collaborator reported
@@ -220,11 +250,6 @@ def _stage_task_workspace(task_id: str, workspace_dir: str, seed: int = DEFAULT_
                 f.write(content)
             info["files_written"] += 1
 
-        # Per-task post-stage patches: fix generator bugs that would make the
-        # task unsolvable without modifying the upstream generator (which is
-        # shared with the ablation harness).
-        _apply_task_patches(task_id, ws_path)
-
         # Write expected.json from the generator (ground truth).
         if getattr(generated, "expected", None) is not None:
             with open(os.path.join(reports_path, "expected.json"), "w") as f:
@@ -234,6 +259,14 @@ def _stage_task_workspace(task_id: str, workspace_dir: str, seed: int = DEFAULT_
         pass  # No generator (e.g., GH103_redis-py_3998 — static only).
     except Exception as e:
         print(f"[stage] generator {task_id} failed: {e}")
+
+    # Per-task post-stage patches: fix generator bugs, inject stub files that
+    # the participant is expected to create. Run UNCONDITIONALLY, not under
+    # the generator try-block — some tasks (RDS10, RDS13) have generators
+    # that require external datasets we don't ship to the droplet, so the
+    # generator fails but the static workspace is still viable and the patch
+    # is still needed. Patch is a no-op when its preconditions are absent.
+    _apply_task_patches(task_id, ws_path)
 
     # 3) Helper artefacts inside the workspace.
     if info["brief"]:
