@@ -35,13 +35,26 @@ interface OracleViewProps {
  *     has this full analysis." (GO1, API1)
  */
 function stripTeamNarrative(md: string): string {
-  return md
-    .replace(/\s*—?\s*Full Specification\s*\(Planner Only\)\s*/gi, ' — Full Specification')
-    .replace(/\s*\(Planner Only\)\s*/gi, '')
-    .replace(/^\s*\[Code changes omitted[^\]]*?(?:Planner|Executor)[^\]]*\]\s*$/gim, '')
-    .replace(/The [Ee]xecutor only (?:sees|receives) the brief[^.\n]*\.\s*/g, '')
-    .replace(/[Tt]he [Pp]lanner (?:must read|has this full analysis)[^.\n]*\.\s*/g, '')
-    .replace(/[Oo]nly the [Pp]lanner who reads [^.\n]*\.\s*/g, '');
+  // Targeted literal strips. An earlier lazy-regex pass ate text inside
+  // `backticked` spans (e.g. "compat_matrix.md" matched the first period)
+  // and mangled surrounding prose. These patterns match only the exact
+  // team-narrative sentences we have found in the 20 task specs.
+  const patterns: [RegExp, string][] = [
+    // Title decorations — "(Planner Only)" etc.
+    [/\s*—?\s*Full Specification\s*\(Planner Only\)\s*/gi, ' — Full Specification'],
+    [/\s*\(Planner Only\)\s*/gi, ''],
+    // GH103 fix-location placeholders.
+    [/^\s*\[Code changes omitted\s*—\s*Planner should analyze the issue and guide the Executor\]\s*$/gim, ''],
+    // GO1 narrative aside.
+    [/\s*The executor only sees the brief; the planner has this full analysis\.?/g, ''],
+    // API1 narrative aside (multi-line — ends at "... instructions.").
+    [/\s*The Executor only receives the brief; the Planner must read[\s\S]{1,120}?instructions\.?/g, ''],
+    // Any other "Only the Planner who reads <X>" aside (API1 has one).
+    [/\s*Only the Planner who reads [^\n]{1,160}\.?/g, ''],
+  ];
+  let out = md;
+  for (const [re, rep] of patterns) out = out.replace(re, rep);
+  return out;
 }
 
 export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog, onLeave, saveStatus }: OracleViewProps) {
