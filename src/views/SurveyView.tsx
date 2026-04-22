@@ -175,6 +175,136 @@ const SOLO_TASK_ITEMS: SoloItem[] = [
 // aligns 1:1 with the TeamBench Planner/Executor/Verifier role structure,
 // plus two orthogonal items (domain expertise, more time) to distinguish
 // "teamwork would've helped" from "I just needed more minutes".
+// ── Team-mode add-ons (task-level, answered once; not per-peer) ──
+//
+// CATME alone measures "was this a good teammate" but not the TeamBench-
+// specific questions: information flow, handoff efficiency, and role-specific
+// functional value. These six items surface exactly those.
+const TEAM_COORDINATION: SoloItem[] = [
+  {
+    id: 'info_held_by_other',
+    label: 'Information asymmetry',
+    prompt: 'Important information was held by another role when I needed it.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'comms_overhead',
+    label: 'Communication overhead',
+    prompt: 'Communication overhead slowed our team down substantially.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'early_plan',
+    label: 'Early alignment',
+    prompt: 'Our team identified the right plan early.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'executor_efficiency',
+    label: 'Executor efficiency',
+    prompt: 'The Executor converted team discussion into concrete progress efficiently.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'verifier_value',
+    label: 'Verifier value',
+    prompt: 'The Verifier caught important mistakes or risky assumptions.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'role_separation_helped',
+    label: 'Role separation net value',
+    prompt: 'Role separation helped more than it hurt on this task.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+];
+
+// Counterfactual "stronger X would have changed the outcome" — three items
+// that let us identify which role(s) each task category is most sensitive to.
+const TEAM_ROLE_NEED: SoloItem[] = [
+  {
+    id: 'stronger_planner',
+    label: 'Planner sensitivity',
+    prompt: 'A stronger Planner would likely have changed the outcome.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'stronger_executor',
+    label: 'Executor sensitivity',
+    prompt: 'A stronger Executor would likely have changed the outcome.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'stronger_verifier',
+    label: 'Verifier sensitivity',
+    prompt: 'A stronger Verifier would likely have changed the outcome.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+];
+
+// Role-specific behavioral items appended to each peer's rating block. Using
+// behavior-grounded prompts (not generic "quality") avoids the halo effect
+// that contaminates CATME ratings once the team knows whether they passed.
+const ROLE_SPECIFIC_ITEMS: Record<string, { id: string; label: string; prompt: string; anchorLow: string; anchorHigh: string }[]> = {
+  planner: [
+    { id: 'clarified_objective', label: 'Objective clarification',
+      prompt: 'This teammate clarified the core objective and reduced wasted effort.',
+      anchorLow: 'Strongly disagree', anchorHigh: 'Strongly agree' },
+    { id: 'identified_subproblems', label: 'Subproblem identification',
+      prompt: 'This teammate identified the right subproblems early.',
+      anchorLow: 'Strongly disagree', anchorHigh: 'Strongly agree' },
+  ],
+  executor: [
+    { id: 'turned_discussion_into_progress', label: 'Concrete progress',
+      prompt: 'This teammate turned team discussion into concrete progress efficiently.',
+      anchorLow: 'Strongly disagree', anchorHigh: 'Strongly agree' },
+    { id: 'surfaced_blockers', label: 'Blocker surfacing',
+      prompt: 'This teammate surfaced implementation blockers quickly.',
+      anchorLow: 'Strongly disagree', anchorHigh: 'Strongly agree' },
+  ],
+  verifier: [
+    { id: 'caught_mistakes', label: 'Mistake detection',
+      prompt: 'This teammate caught important mistakes or risky assumptions.',
+      anchorLow: 'Strongly disagree', anchorHigh: 'Strongly agree' },
+    { id: 'improved_confidence', label: 'Correctness confidence',
+      prompt: 'This teammate improved confidence that the final answer was correct.',
+      anchorLow: 'Strongly disagree', anchorHigh: 'Strongly agree' },
+  ],
+};
+
+// Structured single-choice "what factor most affected the outcome". Split by
+// mode because solo users have no "cross-role information" to ask about, and
+// team users have little point being asked about "tooling friction" vs the
+// role-coordination failure modes we actually want to distinguish.
+const TEAM_PRIMARY_FACTORS = [
+  { id: 'missing_info_across_roles', label: 'Missing information across roles (one role knew something but it wasn\'t conveyed)' },
+  { id: 'unclear_communication', label: 'Unclear communication (messages weren\'t specific or actionable)' },
+  { id: 'weak_or_late_planning', label: 'Weak or late planning' },
+  { id: 'implementation_difficulty', label: 'Implementation difficulty (the code change itself was hard)' },
+  { id: 'missed_verification', label: 'Missed verification (a bug slipped through)' },
+  { id: 'time_pressure', label: 'Time pressure (we knew what to do but ran out of time)' },
+  { id: 'other', label: 'Other' },
+];
+
+const SOLO_PRIMARY_FACTORS = [
+  { id: 'conceptual_hardness', label: 'The task was conceptually hard to reason about' },
+  { id: 'implementation_tedium', label: 'Implementation was tedious or error-prone' },
+  { id: 'missing_domain_knowledge', label: 'I lacked specific domain knowledge the task assumed' },
+  { id: 'ambiguous_spec', label: 'The spec / requirements were ambiguous' },
+  { id: 'tooling_friction', label: 'Tooling or environment friction (test setup, container, etc.)' },
+  { id: 'time_pressure', label: 'Time pressure' },
+  { id: 'other', label: 'Other' },
+];
+
 const SOLO_COUNTERFACTUAL: SoloItem[] = [
   {
     id: 'cf_planner',
@@ -237,9 +367,17 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
   }
 
   const [ratings, setRatings] = useState<Record<string, Record<string, number>>>({});
+  // Role-specific behavioral items per peer: roleSpecific[peerRole][itemId] = n.
+  const [roleSpecific, setRoleSpecific] = useState<Record<string, Record<string, number>>>({});
+  // ── Team-mode add-ons ──
+  const [coordination, setCoordination] = useState<Record<string, number>>({});
+  const [roleNeed, setRoleNeed] = useState<Record<string, number>>({});
   // ── Solo-mode state ──
   const [taskItems, setTaskItems] = useState<Record<string, number>>({});
   const [counterfactual, setCounterfactual] = useState<Record<string, number>>({});
+  // ── Shared: structured primary-factor (both modes) ──
+  const [primaryFactor, setPrimaryFactor] = useState<string | null>(null);
+  const [primaryFactorNote, setPrimaryFactorNote] = useState('');
 
   // ── Attention check: always required. Correct answer is the value
   // referenced in the prompt; lets us filter out straight-line responders. ──
@@ -255,12 +393,18 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
     }));
   };
 
-  // Validation. The attention check adds one required item to both modes.
-  let totalRequired = 1;
-  let totalFilled = attention !== null ? 1 : 0;
+  // Validation. Attention check + primary-factor are required in both modes.
+  let totalRequired = 2;
+  let totalFilled = (attention !== null ? 1 : 0) + (primaryFactor ? 1 : 0);
   if (isTeam) {
     totalRequired += targets.length * DIMENSIONS.length;
     totalFilled += Object.values(ratings).reduce((sum, dims) => sum + Object.keys(dims).length, 0);
+    // Role-specific items: 2 per peer (not self).
+    const peerCount = targets.filter(t => t.type === 'peer').length;
+    totalRequired += peerCount * 2;
+    totalFilled += Object.values(roleSpecific).reduce((sum, items) => sum + Object.keys(items).length, 0);
+    totalRequired += TEAM_COORDINATION.length + TEAM_ROLE_NEED.length;
+    totalFilled += Object.keys(coordination).length + Object.keys(roleNeed).length;
   } else {
     totalRequired += SOLO_TASK_ITEMS.length + SOLO_COUNTERFACTUAL.length;
     totalFilled += Object.keys(taskItems).length + Object.keys(counterfactual).length;
@@ -281,20 +425,29 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
         else peerRatings[targetId] = dims;
       }
       surveyData = {
-        schema_version: '1.2',
-        instrument: 'CATME-lite',
-        reference: 'Ohland et al. (2012) Academy of Management Learning & Education 11(4)',
+        schema_version: '2.0',
+        instrument: 'CATME-lite + TeamBench Coordination',
+        reference: 'Ohland et al. (2012) + TeamBench role-specific extension',
         timestamp: Date.now(),
         timestampISO: new Date().toISOString(),
         sessionId, taskId, mode,
         respondentRole: role,
         peerRatings, selfRating,
+        // Role-specific behavioral items per peer. Keyed by peer role so we
+        // know WHICH role each item was answered about.
+        peerRoleSpecific: roleSpecific,
+        // Task-level task-bench items (answered once, not per peer).
+        coordination,   // 6 items: info asymmetry, comms overhead, early plan, executor/verifier value, role-sep net
+        roleNeed,       // 3 items: "stronger planner/executor/verifier would have changed outcome"
+        // Structured failure-factor + optional note.
+        primaryFactor,
+        primaryFactorNote,
         attentionCheck: { expected: 3, answer: attention, passed: attention === 3 },
         openEnded: { collaborationChallenge: challenge },
       };
     } else {
       surveyData = {
-        schema_version: '1.2',
+        schema_version: '2.0',
         instrument: 'TeamBench-Solo-Reflection',
         reference: 'NASA-TLX (Hart & Staveland, 1988) + CATME counterfactual',
         timestamp: Date.now(),
@@ -302,7 +455,9 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
         sessionId, taskId, mode,
         respondentRole: role,
         taskExperience: taskItems,                  // difficulty/effort/pressure/confidence
-        counterfactualTeamValue: counterfactual,    // CATME dims rated as "would have helped"
+        counterfactualTeamValue: counterfactual,    // role counterfactual + domain + time
+        primaryFactor,
+        primaryFactorNote,
         attentionCheck: { expected: 3, answer: attention, passed: attention === 3 },
         openEnded: { collaborationChallenge: challenge },
       };
@@ -487,12 +642,11 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
               </span>
             </div>
 
-            {/* Dimensions */}
+            {/* CATME-lite dimensions */}
             {DIMENSIONS.map((dim, i) => (
               <div key={dim.id} style={{
-                paddingBottom: i < DIMENSIONS.length - 1 ? 16 : 0,
-                marginBottom: i < DIMENSIONS.length - 1 ? 16 : 0,
-                borderBottom: i < DIMENSIONS.length - 1 ? '1px solid #313244' : 'none',
+                paddingBottom: 16, marginBottom: 16,
+                borderBottom: '1px solid #313244',
               }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4', marginBottom: 2 }}>
                   {dim.label}
@@ -514,8 +668,219 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
                 </div>
               </div>
             ))}
+
+            {/* Role-specific behavioral items (peers only). CATME measures
+                generic teamwork quality but misses role-specific functional
+                value — e.g. a Verifier who barely spoke but caught a critical
+                bug, or a Planner who saved rework via an early course
+                correction. Two behavior-grounded items per peer surface that. */}
+            {target.type === 'peer' && ROLE_SPECIFIC_ITEMS[target.id] && (
+              <>
+                <div style={{
+                  fontSize: 11, fontWeight: 700, color: '#6c7086',
+                  textTransform: 'uppercase', letterSpacing: '0.05em',
+                  marginBottom: 12, marginTop: 4,
+                }}>
+                  Role-specific behaviors
+                </div>
+                {ROLE_SPECIFIC_ITEMS[target.id].map((item, i) => (
+                  <div key={item.id} style={{
+                    paddingBottom: i < ROLE_SPECIFIC_ITEMS[target.id].length - 1 ? 16 : 0,
+                    marginBottom: i < ROLE_SPECIFIC_ITEMS[target.id].length - 1 ? 16 : 0,
+                    borderBottom: i < ROLE_SPECIFIC_ITEMS[target.id].length - 1 ? '1px solid #313244' : 'none',
+                  }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4', marginBottom: 2 }}>
+                      {item.label}
+                    </div>
+                    <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 8 }}>
+                      {item.prompt}
+                    </div>
+                    <LikertScale
+                      name={`rs_${target.id}_${item.id}`}
+                      value={roleSpecific[target.id]?.[item.id] ?? null}
+                      onChange={v => setRoleSpecific(prev => ({
+                        ...prev,
+                        [target.id]: { ...prev[target.id], [item.id]: v },
+                      }))}
+                    />
+                    <div style={{
+                      display: 'flex', justifyContent: 'space-between',
+                      fontSize: 10, color: '#45475a', marginTop: 2, padding: '0 4px',
+                    }}>
+                      <span>{item.anchorLow}</span>
+                      <span>{item.anchorHigh}</span>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
         ))}
+
+        {/* ── Team-only: TeamBench Coordination Block (task-level) ──
+            Six items that isolate what CATME misses: information flow,
+            handoff efficiency, and role-specific functional value. */}
+        {isTeam && (
+          <div style={{
+            background: '#1e1e2e', border: '1px solid #313244',
+            borderRadius: 12, padding: 20, marginBottom: 16,
+          }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6,
+            }}>
+              <span style={{
+                fontSize: 11, fontWeight: 700, padding: '3px 8px',
+                borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.05em',
+                background: 'rgba(137, 180, 250, 0.15)', color: '#89b4fa',
+              }}>
+                Coordination
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4' }}>
+                How did the team work together on this specific task?
+              </span>
+            </div>
+            <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 16 }}>
+              Think about the task you just finished — not teamwork in general. Rate each 1 = strongly disagree, 5 = strongly agree.
+            </div>
+            {TEAM_COORDINATION.map((item, i) => (
+              <div key={item.id} style={{
+                paddingBottom: i < TEAM_COORDINATION.length - 1 ? 16 : 0,
+                marginBottom: i < TEAM_COORDINATION.length - 1 ? 16 : 0,
+                borderBottom: i < TEAM_COORDINATION.length - 1 ? '1px solid #313244' : 'none',
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4', marginBottom: 2 }}>
+                  {item.label}
+                </div>
+                <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 8 }}>
+                  {item.prompt}
+                </div>
+                <LikertScale
+                  name={`coord_${item.id}`}
+                  value={coordination[item.id] ?? null}
+                  onChange={v => setCoordination(prev => ({ ...prev, [item.id]: v }))}
+                />
+                <div style={{
+                  display: 'flex', justifyContent: 'space-between',
+                  fontSize: 10, color: '#45475a', marginTop: 2, padding: '0 4px',
+                }}>
+                  <span>{item.anchorLow}</span>
+                  <span>{item.anchorHigh}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── Team-only: Role Need counterfactual ── */}
+        {isTeam && (
+          <div style={{
+            background: '#1e1e2e', border: '1px solid #313244',
+            borderRadius: 12, padding: 20, marginBottom: 16,
+          }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6,
+            }}>
+              <span style={{
+                fontSize: 11, fontWeight: 700, padding: '3px 8px',
+                borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.05em',
+                background: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b',
+              }}>
+                Role Sensitivity
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4' }}>
+                Which role, if stronger, would have most affected the outcome?
+              </span>
+            </div>
+            <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 16 }}>
+              This helps us identify which tasks are sensitive to which role.
+            </div>
+            {TEAM_ROLE_NEED.map((item, i) => (
+              <div key={item.id} style={{
+                paddingBottom: i < TEAM_ROLE_NEED.length - 1 ? 16 : 0,
+                marginBottom: i < TEAM_ROLE_NEED.length - 1 ? 16 : 0,
+                borderBottom: i < TEAM_ROLE_NEED.length - 1 ? '1px solid #313244' : 'none',
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4', marginBottom: 2 }}>
+                  {item.label}
+                </div>
+                <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 8 }}>
+                  {item.prompt}
+                </div>
+                <LikertScale
+                  name={`need_${item.id}`}
+                  value={roleNeed[item.id] ?? null}
+                  onChange={v => setRoleNeed(prev => ({ ...prev, [item.id]: v }))}
+                />
+                <div style={{
+                  display: 'flex', justifyContent: 'space-between',
+                  fontSize: 10, color: '#45475a', marginTop: 2, padding: '0 4px',
+                }}>
+                  <span>{item.anchorLow}</span>
+                  <span>{item.anchorHigh}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── Primary Factor single-choice (both modes, mode-aware options) ── */}
+        <div style={{
+          background: '#1e1e2e', border: '1px solid #313244',
+          borderRadius: 12, padding: 20, marginBottom: 16,
+        }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6,
+          }}>
+            <span style={{
+              fontSize: 11, fontWeight: 700, padding: '3px 8px',
+              borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.05em',
+              background: 'rgba(243, 139, 168, 0.15)', color: '#f38ba8',
+            }}>
+              Primary Factor
+            </span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4' }}>
+              {isTeam
+                ? 'Which single factor most affected your team\'s outcome on this task?'
+                : 'Which single factor most affected how well you did on this task?'}
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+            {(isTeam ? TEAM_PRIMARY_FACTORS : SOLO_PRIMARY_FACTORS).map(pf => {
+              const active = primaryFactor === pf.id;
+              return (
+                <div
+                  key={pf.id}
+                  onClick={() => setPrimaryFactor(pf.id)}
+                  style={{
+                    padding: '10px 12px',
+                    background: active ? 'rgba(137, 180, 250, 0.12)' : '#181825',
+                    border: `1px solid ${active ? '#89b4fa' : '#313244'}`,
+                    borderRadius: 6, cursor: 'pointer', fontSize: 13,
+                    color: active ? '#cdd6f4' : '#a6adc8',
+                    fontWeight: active ? 600 : 400,
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {pf.label}
+                </div>
+              );
+            })}
+          </div>
+          {primaryFactor && (
+            <textarea
+              value={primaryFactorNote}
+              onChange={e => setPrimaryFactorNote(e.target.value)}
+              placeholder="Briefly explain (optional)…"
+              maxLength={400}
+              style={{
+                width: '100%', marginTop: 10, minHeight: 48,
+                background: '#313244', color: '#cdd6f4',
+                border: '1px solid #45475a', borderRadius: 6, padding: 8, fontSize: 13,
+                resize: 'vertical', fontFamily: 'inherit', boxSizing: 'border-box',
+              }}
+            />
+          )}
+        </div>
 
         {/* Attention check — appears in both solo and team surveys. The
             prompt tells the respondent exactly which answer to pick, so a
