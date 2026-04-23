@@ -1,4 +1,6 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { onValue, ref } from 'firebase/database';
+import { db } from '../firebase';
 import { ChatPanel } from '../components/ChatPanel';
 import { MarkdownViewer } from '../components/MarkdownViewer';
 import { FileTree } from '../components/FileTree';
@@ -7,6 +9,29 @@ import { Timer } from '../components/Timer';
 import { Resizer } from '../components/Resizer';
 import { Onboarding, VERIFIER_STEPS } from '../components/Onboarding';
 import { SessionState, Role, FileEntry } from '../types';
+
+// Subscribes to `teambench/sessions/{sid}/agentModelUsage` and returns a
+// per-role summary for the "AI Activity" panel in hybrid mode. Undefined
+// in team/solo modes so non-hybrid rendering stays cheap.
+interface AgentUsage {
+  role: 'planner' | 'executor';
+  gateway: string;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  timestamp: number;
+}
+function useAgentActivity(sessionId: string, enabled: boolean) {
+  const [entries, setEntries] = useState<AgentUsage[]>([]);
+  useEffect(() => {
+    if (!enabled || !sessionId) return;
+    return onValue(ref(db, `teambench/sessions/${sessionId}/agentModelUsage`), snap => {
+      if (!snap.exists()) { setEntries([]); return; }
+      const vals = Object.values(snap.val() as Record<string, AgentUsage>);
+      vals.sort((a, b) => a.timestamp - b.timestamp);
+      setEntries(vals);
+    });
+  }, [sessionId, enabled]);
+  return entries;
+}
 
 interface VerifierViewProps {
   session: SessionState;
@@ -33,6 +58,7 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
 
   const currentFile = files.find(f => f.path === selectedFile);
   const canVerify = session.phase === 'verification';
+  const agentActivity = useAgentActivity(session.sessionId, session.mode === 'hybrid');
 
   // Spotlights for the Verifier: (1) the Workspace tab (they start on Spec),
   // (2) the verdict buttons once they've inspected the work, (3) the submit
@@ -155,6 +181,42 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
               Your Planner and Executor are AI agents. Watch their work in chat + Workspace,
               then grade the result. If you submit FAIL, your notes will be sent back to
               the AI Executor for another attempt (up to 2 remediations).
+              {agentActivity.length > 0 && (
+                <details style={{ marginTop: 6 }}>
+                  <summary style={{ cursor: 'pointer', color: '#86efac', fontSize: 11 }}>
+                    AI Activity ({agentActivity.length} {agentActivity.length === 1 ? 'turn' : 'turns'})
+                  </summary>
+                  <table style={{
+                    width: '100%', marginTop: 6, fontSize: 10, fontFamily: 'ui-monospace, monospace',
+                    borderCollapse: 'collapse',
+                  }}>
+                    <thead>
+                      <tr style={{ color: '#6c7086', textAlign: 'left' }}>
+                        <th style={{ padding: '2px 6px' }}>Role</th>
+                        <th style={{ padding: '2px 6px' }}>Gateway</th>
+                        <th style={{ padding: '2px 6px', textAlign: 'right' }}>In→Out tokens</th>
+                        <th style={{ padding: '2px 6px' }}>Time</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {agentActivity.map((e, i) => (
+                        <tr key={i} style={{ borderTop: '1px solid #313244' }}>
+                          <td style={{ padding: '2px 6px', color: e.role === 'planner' ? '#a5b4fc' : '#fbbf24' }}>
+                            {e.role}
+                          </td>
+                          <td style={{ padding: '2px 6px', color: '#a6adc8' }}>{e.gateway}</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: '#cdd6f4' }}>
+                            {e.usage?.prompt_tokens ?? 0}→{e.usage?.completion_tokens ?? 0}
+                          </td>
+                          <td style={{ padding: '2px 6px', color: '#6c7086' }}>
+                            {new Date(e.timestamp).toLocaleTimeString()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </details>
+              )}
             </div>
           )}
           {/* Phase-gating banner for non-verification phases. Without this,
