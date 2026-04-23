@@ -124,6 +124,14 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
   }, [initialFiles]);
   const fileIsChanged = !!(currentFile && initialFiles[currentFile.path] != null
                            && initialFiles[currentFile.path] !== currentFile.content);
+  // Every path that differs from the baseline, for the FileTree to color
+  // and dot-mark. Recomputed each render from the two prop snapshots —
+  // cheap for workspaces <100 files.
+  const modifiedPaths = new Set(
+    files
+      .filter(f => initialFiles[f.path] == null || initialFiles[f.path] !== f.content)
+      .map(f => f.path),
+  );
 
   // Team-mode auto-grading: when the Executor hands off, the Verifier
   // needs to see the grader's output to decide PASS/FAIL. Hybrid mode's
@@ -288,7 +296,7 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
             ) : (
               <div style={{ display: 'flex', height: '100%' }}>
                 <div style={{ width: fileTreeWidth, minWidth: 140, maxWidth: 500, overflow: 'hidden' }}>
-                  <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
+                  <FileTree files={files} selectedPath={selectedFile} modifiedPaths={modifiedPaths} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
                 </div>
                 <Resizer direction="horizontal" onResize={handleResize} />
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>

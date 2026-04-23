@@ -364,7 +364,7 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                   onClick={() => { setMode('team'); setSelectedRole(null); }}
                   color="#89b4fa"
                   title="Team Mode"
-                  subtitle="3 players"
+                  subtitle="3 humans"
                   desc="Collaborate with a Planner and Verifier. Each role has different access."
                   emojis={pickEmojis(`${selectedTask?.taskId || ''}|team`, 'team')}
                   status={statusFor(userSolved[selectedTask?.taskId || '']?.team)}
@@ -374,7 +374,7 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                   onClick={() => { setMode('oracle'); setSelectedRole('oracle'); }}
                   color="#cba6f7"
                   title="Solo Mode"
-                  subtitle="1 player"
+                  subtitle="1 human"
                   desc="Full access to everything. Spec, code, terminal, and verification."
                   emojis={pickEmojis(`${selectedTask?.taskId || ''}|oracle`, 'humans')}
                   status={statusFor(userSolved[selectedTask?.taskId || '']?.oracle)}
@@ -384,8 +384,8 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                   onClick={() => { setMode('hybrid'); setSelectedRole('verifier'); }}
                   color="#10b981"
                   title="Hybrid Mode"
-                  subtitle="You + 2 AI"
-                  desc="You are the Verifier. AI Planner + AI Executor write code; you grade it."
+                  subtitle="1 human + 2 AI"
+                  desc="The Human is the Verifier. AI Planner + AI Executor write code; the Human grades it."
                   emojis={pickEmojis(`${selectedTask?.taskId || ''}|hybrid`, 'hybrid')}
                   status={statusFor(userSolved[selectedTask?.taskId || '']?.hybrid)}
                 />
@@ -618,21 +618,15 @@ function Field({ label, value, onChange, placeholder, type }: {
   );
 }
 
-// Random pool of human face emojis. We pick stable choices per (taskId,
-// mode) using a simple hash so the icons don't churn between renders.
-const HUMAN_EMOJIS = ['🧑‍💻', '👩‍💻', '👨‍💻', '🧑', '👩', '👨', '🧑‍🎓', '👩‍🎓', '👨‍🎓', '🧑‍🔬', '👩‍🔬', '👨‍🔬'];
+// Single human icon across all modes — using multiple varied emojis looked
+// like role labels and was confusing per user feedback.
+const HUMAN_EMOJI = '🧑‍💻';
 const ROBOT_EMOJI = '🤖';
 
-function pickEmojis(seed: string, kind: 'humans' | 'team' | 'hybrid'): string {
-  // Cheap deterministic hash so the same task+mode always shows the same icons.
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < seed.length; i++) {
-    h = Math.imul(h ^ seed.charCodeAt(i), 16777619) >>> 0;
-  }
-  const pick = (offset: number) => HUMAN_EMOJIS[(h + offset * 31) % HUMAN_EMOJIS.length];
-  if (kind === 'team') return `${pick(0)} ${pick(1)} ${pick(2)}`;
-  if (kind === 'hybrid') return `${ROBOT_EMOJI} ${pick(0)} ${ROBOT_EMOJI}`;
-  return pick(0); // solo
+function pickEmojis(_seed: string, kind: 'humans' | 'team' | 'hybrid'): string {
+  if (kind === 'team') return `${HUMAN_EMOJI} ${HUMAN_EMOJI} ${HUMAN_EMOJI}`;
+  if (kind === 'hybrid') return `${ROBOT_EMOJI} ${HUMAN_EMOJI} ${ROBOT_EMOJI}`;
+  return HUMAN_EMOJI; // solo
 }
 
 const STATUS_LABEL: Record<ModeStatus, { label: string; color: string }> = {

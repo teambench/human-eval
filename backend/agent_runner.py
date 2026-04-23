@@ -373,13 +373,43 @@ def _chat_listen(
         msgs_raw = fb.get(fb.session_path(session_id, "messages")) or {}
         msgs = sorted(list(msgs_raw.values()) if isinstance(msgs_raw, dict) else [],
                       key=lambda m: m.get("timestamp", 0))
-        # Unanswered verifier questions addressed to us or to 'all'.
-        new_qs = [
+
+        # Decide who should respond to each verifier message:
+        #   - `to == role`           → always respond
+        #   - `to == 'all'`:
+        #       * if the other role's name is mentioned in text → do NOT respond
+        #         (let the addressed role handle it)
+        #       * if MY role's name is mentioned → respond
+        #       * else → only the EXECUTOR replies (prevents both agents from
+        #         piling on every "hey team" message; planner is one-shot
+        #         by design and should stay quiet for general Q&A)
+        other_role = "executor" if role == "planner" else "planner"
+
+        def _addressed(m: dict) -> bool:
+            to = m.get("to", "")
+            if to == role:
+                return True
+            if to != "all":
+                return False
+            text = (m.get("content", "") or "").lower()
+            if other_role in text and role not in text:
+                return False
+            if role in text:
+                return True
+            return role == "executor"
+
+        # Advance the watermark past every verifier message we've seen
+        # (whether or not we'll respond to it). Without this, a skipped
+        # message (e.g. one addressed to the other agent) sits forever in
+        # the poll window.
+        verifier_msgs = [
             m for m in msgs
-            if m.get("timestamp", 0) > last_seen_ts
-            and m.get("from") == "verifier"
-            and m.get("to") in (role, "all")
+            if m.get("timestamp", 0) > last_seen_ts and m.get("from") == "verifier"
         ]
+        if verifier_msgs:
+            last_seen_ts = max(m.get("timestamp", 0) for m in verifier_msgs)
+
+        new_qs = [m for m in verifier_msgs if _addressed(m)]
 
         if not new_qs:
             time.sleep(POLL_INTERVAL)
@@ -388,7 +418,6 @@ def _chat_listen(
         # Only reply to the most recent; older ones are implicitly
         # answered by a fresh message.
         q = new_qs[-1]
-        last_seen_ts = q.get("timestamp", last_seen_ts)
         last_activity = time.time()
 
         context_parts: list[str] = []
