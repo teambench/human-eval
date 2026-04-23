@@ -25,6 +25,11 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
   const [notes, setNotes] = useState('');
   const [viewedWorkspace, setViewedWorkspace] = useState(false);
   const [fileTreeWidth, setFileTreeWidth] = useState(260);
+  // Top-level so hook-call order is constant — same bug as PlannerView.
+  const handleResize = useCallback(
+    (d: number) => setFileTreeWidth(w => Math.max(140, Math.min(500, w + d))),
+    [],
+  );
 
   const currentFile = files.find(f => f.path === selectedFile);
   const canVerify = session.phase === 'verification';
@@ -127,7 +132,7 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                 <div style={{ width: fileTreeWidth, minWidth: 140, maxWidth: 500, overflow: 'hidden' }}>
                   <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
                 </div>
-                <Resizer direction="horizontal" onResize={useCallback((d: number) => setFileTreeWidth(w => Math.max(140, Math.min(500, w + d))), [])} />
+                <Resizer direction="horizontal" onResize={handleResize} />
                 <div style={{ flex: 1 }}>
                   {currentFile ? (
                     <CodeEditor path={currentFile.path} content={currentFile.content} language={currentFile.language} readOnly />

@@ -24,6 +24,15 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
   // Planner's file-list width is user-resizable. Task paths like
   // `scipy/spatial/transform/_rotation_cy.pyx` overrun the old fixed 200px.
   const [fileTreeWidth, setFileTreeWidth] = useState(260);
+  // IMPORTANT: this useCallback MUST live at the top level of the component,
+  // not inside the `activeTab === 'files'` branch of the JSX. A conditional
+  // hook call (e.g. useCallback inside a ternary that only renders one side)
+  // changes React's hook-call order between renders and throws on tab
+  // switches — users reported clicking the Files tab blanked the page.
+  const handleResize = useCallback(
+    (d: number) => setFileTreeWidth(w => Math.max(140, Math.min(500, w + d))),
+    [],
+  );
 
   const currentFile = files.find(f => f.path === selectedFile);
 
@@ -110,7 +119,7 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
                 <div style={{ width: fileTreeWidth, minWidth: 140, maxWidth: 500, overflow: 'hidden' }}>
                   <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
                 </div>
-                <Resizer direction="horizontal" onResize={useCallback((d: number) => setFileTreeWidth(w => Math.max(140, Math.min(500, w + d))), [])} />
+                <Resizer direction="horizontal" onResize={handleResize} />
                 <div style={{ flex: 1 }}>
                   {currentFile ? (
                     <CodeEditor path={currentFile.path} content={currentFile.content} language={currentFile.language} readOnly />
