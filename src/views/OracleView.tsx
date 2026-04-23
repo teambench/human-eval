@@ -108,7 +108,7 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
         const raw = localStorage.getItem('teambench_profile_v1');
         email = raw ? (JSON.parse(raw).email || '') : '';
       } catch { /* ignore */ }
-      await recordTaskAttempt(email, session.taskConfig.taskId, newPartial, sc.pass === true);
+      await recordTaskAttempt(email, session.taskConfig.taskId, 'oracle', newPartial, sc.pass === true);
     } catch (err) {
       console.warn('persist attempt failed', err);
     }

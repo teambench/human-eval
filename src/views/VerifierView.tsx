@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useState } from 'react';
-import { onValue, ref } from 'firebase/database';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { onValue, ref, set } from 'firebase/database';
 import { DiffEditor } from '@monaco-editor/react';
 import { db } from '../firebase';
 import { ChatPanel } from '../components/ChatPanel';
 import { MarkdownViewer } from '../components/MarkdownViewer';
 import { FileTree } from '../components/FileTree';
 import { CodeEditor } from '../components/CodeEditor';
+import { gradeSession } from '../components/Terminal';
 import { Timer } from '../components/Timer';
 import { Resizer } from '../components/Resizer';
 import { Onboarding, VERIFIER_STEPS } from '../components/Onboarding';
 import { SessionState, Role, FileEntry } from '../types';
+import { recordTaskAttempt, ModeKey } from '../lib/solvedTasks';
 
 // Subscribes to per-turn agent usage records — role + token counts. The
 // gateway/model identifier is intentionally NOT exposed to the Verifier
@@ -109,7 +111,10 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
   // baseline. Populated by useFirebaseSession's fetchOnce on first staging
   // complete. Solo mode has no Verifier role so this is never reached.
   const initialFiles = useInitialWorkspace(session.sessionId, true);
-  const lastGrade = useLastGrade(session.sessionId, isHybrid);
+  // Enabled for all modes — the Verifier needs to see grader output
+  // regardless of whether teammates were human or AI. For team mode,
+  // the grader is auto-run on entering verification phase (below).
+  const lastGrade = useLastGrade(session.sessionId, true);
   // Default ON whenever a baseline exists — in team mode the Verifier
   // should see diffs in real time as the Executor edits, not have to
   // hunt for a toggle.
@@ -119,6 +124,52 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
   }, [initialFiles]);
   const fileIsChanged = !!(currentFile && initialFiles[currentFile.path] != null
                            && initialFiles[currentFile.path] !== currentFile.content);
+
+  // Team-mode auto-grading: when the Executor hands off, the Verifier
+  // needs to see the grader's output to decide PASS/FAIL. Hybrid mode's
+  // backend agent_runner writes lastGrade itself; in team mode no one
+  // does, so the Verifier's tab runs the grader once on entering
+  // verification phase and writes the result to Firebase under the same
+  // `lastGrade` path. Guarded to fire AT MOST ONCE per session via a
+  // ref — re-entering verification after a fail verdict still won't
+  // re-grade (the Verifier clicks FAIL to send the Executor back; if
+  // they want fresh grader output after the Executor's next hand-off,
+  // they can reload — the ref resets then).
+  const [autoGrading, setAutoGrading] = useState(false);
+  const autoGradedRef = useRef(false);
+  useEffect(() => {
+    if (isHybrid) return;                // hybrid backend writes lastGrade
+    if (!canVerify) return;
+    if (lastGrade) return;               // already have a grade for this session
+    if (autoGradedRef.current) return;   // already fired once this mount
+    autoGradedRef.current = true;
+    setAutoGrading(true);
+    (async () => {
+      try {
+        const r = await gradeSession(session.sessionId);
+        const sc: any = r?.score ?? null;
+        const pass = sc?.pass === true;
+        const partial = typeof sc?.secondary?.partial_score === 'number'
+          ? sc.secondary.partial_score
+          : (pass ? 1 : 0);
+        const payload = {
+          ok: r?.status !== 'error',
+          verdict: pass ? 'pass' : 'fail',
+          score: partial,
+          scoreDetail: sc,
+          exit_code: typeof r?.exit_code === 'number' ? r.exit_code : null,
+          output: r?.output ?? '',
+          error: r?.status === 'error' ? (r.output || 'grader error') : null,
+          timestamp: Date.now(),
+        };
+        await set(ref(db, `teambench/sessions/${session.sessionId}/lastGrade`), payload);
+      } catch (e) {
+        console.warn('auto-grade failed:', e);
+      } finally {
+        setAutoGrading(false);
+      }
+    })();
+  }, [isHybrid, canVerify, lastGrade, session.sessionId]);
 
   // Spotlights for the Verifier: (1) the Workspace tab (they start on Spec),
   // (2) the verdict buttons once they've inspected the work, (3) the submit
@@ -130,6 +181,27 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
   const handleSubmitVerdict = () => {
     if (!verdict) return;
     onLog('submit_verdict', { verdict, notes });
+
+    // Record per-mode attempt so the lobby's mode cards reflect that this
+    // user has done/attempted this task in this specific mode. Pull email
+    // from localStorage (same pattern as OracleView).
+    if (verdict === 'pass' || verdict === 'fail') {
+      let email = '';
+      try {
+        const raw = localStorage.getItem('teambench_profile_v1');
+        email = raw ? (JSON.parse(raw).email || '') : '';
+      } catch { /* ignore */ }
+      const partial = verdict === 'pass'
+        ? 1.0
+        : (typeof lastGrade?.score === 'number' ? lastGrade.score : 0.0);
+      // Only record team/oracle/hybrid here; oracle has its own path in OracleView.
+      const m = session.mode as ModeKey;
+      if (m === 'team' || m === 'hybrid') {
+        recordTaskAttempt(email, session.taskConfig.taskId, m, partial, verdict === 'pass')
+          .catch(e => console.warn('recordTaskAttempt failed:', e));
+      }
+    }
+
     if (verdict === 'fail') {
       // Send feedback to executor, go back to execution
       onSendMessage('executor', `[VERIFICATION FAILED]\n\n${notes}`);
@@ -350,12 +422,26 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
               marks done.
             </div>
           )}
+          {/* Grading in progress (team mode auto-grader). */}
+          {autoGrading && !lastGrade && (
+            <div style={{
+              padding: '10px 14px', background: '#181825',
+              borderTop: '1px solid #313244', fontSize: 11, color: '#a6adc8',
+              flexShrink: 0,
+            }}>
+              <span style={{ color: '#fbbf24', fontWeight: 600 }}>● Running grader…</span>
+              {' '}This may take up to a minute (some graders compile code).
+            </div>
+          )}
           {/* Test output panel — surfaces the auto-grader's stdout so the
               Verifier can judge based on real test results, not vibes. */}
-          {isHybrid && lastGrade && (
+          {lastGrade && (
             <div style={{
               padding: '10px 14px', background: '#181825',
               borderTop: '1px solid #313244', fontSize: 11, color: '#cdd6f4',
+              // Bound the whole panel so opening the details doesn't push the
+              // Verdict panel off-screen or shrink the file viewer to zero.
+              maxHeight: 300, overflowY: 'auto', flexShrink: 0,
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                 <strong style={{ color: '#cdd6f4' }}>Auto-grader output</strong>
@@ -420,6 +506,7 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
           {canVerify && (
             <div style={{
               padding: 16, background: '#1e1e2e', borderTop: '1px solid #333',
+              flexShrink: 0,
             }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4', marginBottom: 4 }}>
                 Submit Verification Verdict
@@ -495,6 +582,15 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
             messages={messages}
             onSend={onSendMessage}
             disabled={session.phase === 'lobby' || session.phase === 'completed'}
+            systemNote={
+              session.phase === 'planning'
+                ? '💡 You are the Verifier. Read the Specification while the Planner writes the plan. You can ask clarifying questions in chat.'
+                : session.phase === 'execution'
+                ? '💡 The Executor is implementing the plan. They need to click "Mark Done" to hand off to you. Watch the Workspace tab to follow their edits in real time.'
+                : session.phase === 'verification'
+                ? '💡 Your turn. The grader is running (or already ran). Review the diff on the left, check the grader output below, then click PASS or FAIL.'
+                : undefined
+            }
           />
         </div>
       </div>

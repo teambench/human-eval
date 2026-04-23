@@ -3,7 +3,7 @@ import { ref, onValue } from 'firebase/database';
 import { db } from '../firebase';
 import { Role, SessionMode, TaskConfig } from '../types';
 import { TASK_CATALOG, TaskEntry, DEMO_TASK } from '../data/taskCatalog';
-import { subscribeToUserSolved, SolvedRecord, loadSolvedFromLocal } from '../lib/solvedTasks';
+import { subscribeToUserSolved, SolvedByModeMap, statusFor, ModeStatus, loadSolvedFromLocal } from '../lib/solvedTasks';
 
 // ── Types ──
 export interface UserProfile {
@@ -87,7 +87,7 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
   // Solved / attempted map, keyed by taskId. Source of truth is Firebase at
   // teambench/users/{sanitized_email}/solved, with localStorage as an instant
   // cache so badges render immediately on page load.
-  const [userSolved, setUserSolved] = useState<Record<string, SolvedRecord>>(loadSolvedFromLocal());
+  const [userSolved, setUserSolved] = useState<SolvedByModeMap>(loadSolvedFromLocal());
   useEffect(() => {
     if (!profile.email?.trim()) return;
     return subscribeToUserSolved(profile.email, setUserSolved);
@@ -318,7 +318,6 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                     key={task.taskId}
                     task={task}
                     isSelected={selectedTask?.taskId === task.taskId}
-                    solvedStatus={userSolved[task.taskId]}
                     onClick={() => setSelectedTask(task)}
                   />
                 ))}
@@ -355,7 +354,10 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                 </span>
               </p>
 
-              {/* Mode cards */}
+              {/* Mode cards — per-mode status badges (DONE / ATTEMPTED / NOT STARTED)
+                  reflect THIS user's progress on the selected task in that specific
+                  mode. Emojis: 3 humans for Team, 1 human for Solo, 2 robots + 1
+                  human for Hybrid. */}
               <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
                 <ModeCard
                   selected={mode === 'team'}
@@ -364,6 +366,8 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                   title="Team Mode"
                   subtitle="3 players"
                   desc="Collaborate with a Planner and Verifier. Each role has different access."
+                  emojis={pickEmojis(`${selectedTask?.taskId || ''}|team`, 'team')}
+                  status={statusFor(userSolved[selectedTask?.taskId || '']?.team)}
                 />
                 <ModeCard
                   selected={mode === 'oracle'}
@@ -372,6 +376,8 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                   title="Solo Mode"
                   subtitle="1 player"
                   desc="Full access to everything. Spec, code, terminal, and verification."
+                  emojis={pickEmojis(`${selectedTask?.taskId || ''}|oracle`, 'humans')}
+                  status={statusFor(userSolved[selectedTask?.taskId || '']?.oracle)}
                 />
                 <ModeCard
                   selected={mode === 'hybrid'}
@@ -380,6 +386,8 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                   title="Hybrid Mode"
                   subtitle="You + 2 AI"
                   desc="You are the Verifier. AI Planner + AI Executor write code; you grade it."
+                  emojis={pickEmojis(`${selectedTask?.taskId || ''}|hybrid`, 'hybrid')}
+                  status={statusFor(userSolved[selectedTask?.taskId || '']?.hybrid)}
                 />
               </div>
 
@@ -610,18 +618,55 @@ function Field({ label, value, onChange, placeholder, type }: {
   );
 }
 
-function ModeCard({ selected, onClick, color, title, subtitle, desc }: {
-  selected: boolean; onClick: () => void; color: string; title: string; subtitle: string; desc: string;
+// Random pool of human face emojis. We pick stable choices per (taskId,
+// mode) using a simple hash so the icons don't churn between renders.
+const HUMAN_EMOJIS = ['🧑‍💻', '👩‍💻', '👨‍💻', '🧑', '👩', '👨', '🧑‍🎓', '👩‍🎓', '👨‍🎓', '🧑‍🔬', '👩‍🔬', '👨‍🔬'];
+const ROBOT_EMOJI = '🤖';
+
+function pickEmojis(seed: string, kind: 'humans' | 'team' | 'hybrid'): string {
+  // Cheap deterministic hash so the same task+mode always shows the same icons.
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < seed.length; i++) {
+    h = Math.imul(h ^ seed.charCodeAt(i), 16777619) >>> 0;
+  }
+  const pick = (offset: number) => HUMAN_EMOJIS[(h + offset * 31) % HUMAN_EMOJIS.length];
+  if (kind === 'team') return `${pick(0)} ${pick(1)} ${pick(2)}`;
+  if (kind === 'hybrid') return `${ROBOT_EMOJI} ${pick(0)} ${ROBOT_EMOJI}`;
+  return pick(0); // solo
+}
+
+const STATUS_LABEL: Record<ModeStatus, { label: string; color: string }> = {
+  done:        { label: 'DONE',        color: '#a6e3a1' },
+  attempted:   { label: 'ATTEMPTED',   color: '#f9e2af' },
+  not_started: { label: 'NOT STARTED', color: '#6c7086' },
+};
+
+function ModeCard({
+  selected, onClick, color, title, subtitle, desc, emojis, status,
+}: {
+  selected: boolean; onClick: () => void; color: string;
+  title: string; subtitle: string; desc: string;
+  emojis: string;
+  status: ModeStatus;
 }) {
+  const statusInfo = STATUS_LABEL[status];
   return (
     <div onClick={onClick} style={{
       flex: 1, padding: 16, background: '#181825', borderRadius: 12, cursor: 'pointer',
       border: `2px solid ${selected ? color : 'transparent'}`, textAlign: 'center',
       transition: 'all 0.15s',
     }}>
+      <div style={{ fontSize: 22, marginBottom: 6, letterSpacing: 2 }}>{emojis}</div>
       <div style={{ fontSize: 18, fontWeight: 800, color: selected ? color : '#cdd6f4', marginBottom: 2 }}>{title}</div>
       <div style={{ fontSize: 11, color: '#585b70', marginBottom: 8 }}>{subtitle}</div>
-      <div style={{ fontSize: 12, color: '#a6adc8', lineHeight: 1.4 }}>{desc}</div>
+      <div style={{ fontSize: 12, color: '#a6adc8', lineHeight: 1.4, marginBottom: 8 }}>{desc}</div>
+      <div style={{
+        display: 'inline-block', fontSize: 10, fontWeight: 700,
+        padding: '2px 8px', borderRadius: 4,
+        color: '#000', background: statusInfo.color,
+      }}>
+        {statusInfo.label}
+      </div>
     </div>
   );
 }
@@ -665,17 +710,14 @@ function FadeIn({ children }: { children: React.ReactNode }) {
   </div>;
 }
 
-function TaskRow({ task, isSelected, onClick, solvedStatus }: {
+function TaskRow({ task, isSelected, onClick }: {
   task: TaskEntry;
   isSelected: boolean;
   onClick: () => void;
-  solvedStatus?: { bestPartial: number; pass: boolean; attempts?: number };
 }) {
-  const solvedFull = solvedStatus?.pass === true;
-  const bestPartial = solvedStatus?.bestPartial ?? 0;
-  const attempts = solvedStatus?.attempts ?? (solvedStatus ? 1 : 0);
-  // Any prior submission (graded at least once) gets a badge, not only ≥70%.
-  const attempted = !solvedFull && attempts > 0;
+  // Per-task progress badges removed by request — progress is shown
+  // per-mode on the Mode selection screen (a participant can have
+  // different status in Solo vs Team vs Hybrid for the same task).
   return (
     <div
       onClick={onClick}
@@ -695,26 +737,6 @@ function TaskRow({ task, isSelected, onClick, solvedStatus }: {
             {task.difficulty.toUpperCase()}
           </span>
           <span style={{ color: '#cdd6f4', fontWeight: 600, fontSize: 13 }}>{task.taskId}</span>
-          {solvedFull && (
-            <span title={`Passed in a previous session (${attempts} attempt${attempts > 1 ? 's' : ''})`} style={{
-              fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
-              color: '#000', background: '#a6e3a1',
-            }}>
-              ✓ SOLVED
-            </span>
-          )}
-          {attempted && (
-            <span
-              title={`Attempted ${attempts} time${attempts > 1 ? 's' : ''} — best score: ${Math.round(bestPartial * 100)}%`}
-              style={{
-                fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
-                color: '#000',
-                background: bestPartial >= 0.7 ? '#f9e2af' : '#fab387',
-              }}
-            >
-              ATTEMPTED · {Math.round(bestPartial * 100)}%
-            </span>
-          )}
         </div>
         <span style={{ color: '#585b70', fontSize: 11 }}>{task.category}</span>
       </div>

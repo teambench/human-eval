@@ -2,24 +2,21 @@ import { ref, get, set, onValue } from 'firebase/database';
 import { db } from '../firebase';
 
 /**
- * Cross-session per-user task-attempt persistence.
+ * Cross-session per-user PER-MODE task-attempt persistence.
  *
- * The survey/session/chat data is already in Firebase, so task-attempt
- * history should be too — it lets participants see "already tried" across
- * devices and browsers, and it gives the analysis a durable record that
- * survives localStorage wipes / incognito sessions.
+ * The user explicitly wanted progress reported per (task, mode) — they'll
+ * have a different status in Solo vs Team vs Hybrid for the same task.
+ * Old schema was flat per-task. New schema:
  *
- * Shape:  teambench/users/{sanitized_email}/solved/{taskId} = {
- *   bestPartial: number (0..1),
- *   pass: boolean,
- *   attempts: number,
- *   lastGradedISO: string,
- * }
+ *   teambench/users/{sanitized_email}/solvedByMode/{taskId}/{mode} =
+ *     SolvedRecord
  *
- * We also mirror to localStorage (`teambench_solved_v1`) so the picker
- * renders badges instantly without waiting for a Firebase round-trip,
- * and works briefly offline.
+ * The legacy `solved/{taskId}` (flat) path is still read for backward
+ * compat — it gets attributed to mode='oracle' since that was the only
+ * mode that wrote there.
  */
+
+export type ModeKey = 'team' | 'oracle' | 'hybrid';
 
 export interface SolvedRecord {
   bestPartial: number;
@@ -28,99 +25,141 @@ export interface SolvedRecord {
   lastGradedISO: string;
 }
 
-const LS_KEY = 'teambench_solved_v1';
+export type SolvedByModeMap =
+  Record<string, Partial<Record<ModeKey, SolvedRecord>>>;
+
+/** Convenience: status for one (task, mode) pair, for badge rendering. */
+export type ModeStatus = 'done' | 'attempted' | 'not_started';
+export function statusFor(rec?: SolvedRecord): ModeStatus {
+  if (!rec) return 'not_started';
+  if (rec.pass) return 'done';
+  if ((rec.attempts ?? 0) > 0) return 'attempted';
+  return 'not_started';
+}
+
+const LS_KEY = 'teambench_solved_v2';
+const LS_LEGACY_KEY = 'teambench_solved_v1';
 
 // Firebase RTDB forbids `.` `$` `#` `[` `]` `/` in paths. Lowercase + replace.
 function sanitizeEmail(email: string): string {
   return (email || '').trim().toLowerCase().replace(/[.\/\[\]#$@]/g, '_');
 }
 
-function readLocal(): Record<string, SolvedRecord> {
+function readLocal(): SolvedByModeMap {
   try {
-    return JSON.parse(localStorage.getItem(LS_KEY) || '{}');
+    const v2 = JSON.parse(localStorage.getItem(LS_KEY) || '{}') as SolvedByModeMap;
+    if (Object.keys(v2).length > 0) return v2;
+    // Migrate v1 → v2 (old flat records were Oracle-only).
+    const v1 = JSON.parse(localStorage.getItem(LS_LEGACY_KEY) || '{}') as Record<string, SolvedRecord>;
+    const out: SolvedByModeMap = {};
+    for (const [tid, rec] of Object.entries(v1)) {
+      out[tid] = { oracle: rec };
+    }
+    return out;
   } catch {
     return {};
   }
 }
 
-function writeLocal(store: Record<string, SolvedRecord>) {
+function writeLocal(store: SolvedByModeMap) {
   try { localStorage.setItem(LS_KEY, JSON.stringify(store)); } catch { /* quota */ }
 }
 
+function mergeRecord(prev: SolvedRecord | undefined, partial: number, pass: boolean): SolvedRecord {
+  return {
+    bestPartial: Math.max(prev?.bestPartial ?? 0, partial),
+    pass: pass || prev?.pass === true,
+    attempts: (prev?.attempts ?? 0) + 1,
+    lastGradedISO: new Date().toISOString(),
+  };
+}
+
 /**
- * Record a grading attempt. Writes to both Firebase (source of truth) and
- * localStorage (instant-read cache). Increments attempts counter and takes
- * the max bestPartial / OR of pass.
+ * Record a grading attempt for (task, mode). Writes to Firebase (source
+ * of truth at users/{email}/solvedByMode/{taskId}/{mode}) and mirrors to
+ * localStorage so badges render instantly on next lobby visit.
  */
 export async function recordTaskAttempt(
   email: string,
   taskId: string,
+  mode: ModeKey,
   partial: number,
   pass: boolean,
 ) {
   const safeEmail = sanitizeEmail(email);
-  const now = new Date().toISOString();
 
   // 1) Local cache update — immediate.
   const local = readLocal();
-  const prev = local[taskId] || { bestPartial: 0, pass: false, attempts: 0, lastGradedISO: '' };
-  const merged: SolvedRecord = {
-    bestPartial: Math.max(prev.bestPartial ?? 0, partial),
-    pass: pass || prev.pass === true,
-    attempts: (prev.attempts ?? 0) + 1,
-    lastGradedISO: now,
-  };
-  local[taskId] = merged;
+  const prevByMode = local[taskId] || {};
+  prevByMode[mode] = mergeRecord(prevByMode[mode], partial, pass);
+  local[taskId] = prevByMode;
   writeLocal(local);
 
-  // 2) Firebase — if no email, skip (shouldn't happen; profile requires it).
+  // 2) Firebase write under the new per-mode path.
   if (!safeEmail) return;
   try {
-    const fbRef = ref(db, `teambench/users/${safeEmail}/solved/${taskId}`);
+    const fbRef = ref(db, `teambench/users/${safeEmail}/solvedByMode/${taskId}/${mode}`);
     const prevSnap = await get(fbRef);
-    const prevFb: SolvedRecord | undefined = prevSnap.exists() ? prevSnap.val() : undefined;
-    await set(fbRef, {
-      bestPartial: Math.max(prevFb?.bestPartial ?? 0, partial),
-      pass: pass || prevFb?.pass === true,
-      attempts: (prevFb?.attempts ?? 0) + 1,
-      lastGradedISO: now,
-    });
+    const prev: SolvedRecord | undefined = prevSnap.exists() ? prevSnap.val() : undefined;
+    await set(fbRef, mergeRecord(prev, partial, pass));
   } catch (err) {
-    // Firebase hiccup — localStorage still has the record for the current session.
     console.warn('recordTaskAttempt: Firebase write failed', err);
   }
 }
 
 /**
- * Subscribe to the current user's solved-task map. Returns an unsubscribe
- * function. Callback receives the full map (possibly empty).
- *
- * Populates localStorage with each received snapshot so the badge renders
- * instantly on next lobby visit even before the Firebase read completes.
+ * Subscribe to the current user's per-mode solved map. Returns an
+ * unsubscribe. Reads BOTH new (solvedByMode) and legacy (solved) paths
+ * — legacy records are attributed to mode='oracle' for back-compat.
  */
 export function subscribeToUserSolved(
   email: string,
-  cb: (solved: Record<string, SolvedRecord>) => void,
+  cb: (solved: SolvedByModeMap) => void,
 ): () => void {
   const safeEmail = sanitizeEmail(email);
   if (!safeEmail) {
     cb(readLocal());
     return () => {};
   }
-  // Fire localStorage immediately so UI paints without flicker.
-  cb(readLocal());
-  const fbRef = ref(db, `teambench/users/${safeEmail}/solved`);
-  const unsub = onValue(fbRef, (snap) => {
-    const data: Record<string, SolvedRecord> = snap.val() || {};
-    // Merge with local (keep any local-only tasks if Firebase is sparse).
+
+  cb(readLocal()); // paint instantly from cache
+
+  // Track partial state from both subscriptions and merge.
+  let modal: SolvedByModeMap = {};
+  let legacy: Record<string, SolvedRecord> = {};
+
+  const emit = () => {
+    const out: SolvedByModeMap = {};
+    // Start with new shape.
+    for (const [tid, byMode] of Object.entries(modal)) {
+      out[tid] = { ...byMode };
+    }
+    // Overlay legacy as oracle if not already present.
+    for (const [tid, rec] of Object.entries(legacy)) {
+      out[tid] = out[tid] || {};
+      if (!out[tid].oracle) out[tid].oracle = rec;
+    }
+    // Merge with localStorage (keep local-only entries).
     const local = readLocal();
-    const merged = { ...local, ...data };
-    writeLocal(merged);
-    cb(merged);
-  });
-  return unsub;
+    for (const [tid, byMode] of Object.entries(local)) {
+      out[tid] = { ...(byMode as any), ...(out[tid] || {}) };
+    }
+    writeLocal(out);
+    cb(out);
+  };
+
+  const unsubNew = onValue(
+    ref(db, `teambench/users/${safeEmail}/solvedByMode`),
+    snap => { modal = snap.val() || {}; emit(); },
+  );
+  const unsubLegacy = onValue(
+    ref(db, `teambench/users/${safeEmail}/solved`),
+    snap => { legacy = snap.val() || {}; emit(); },
+  );
+
+  return () => { unsubNew(); unsubLegacy(); };
 }
 
-export function loadSolvedFromLocal(): Record<string, SolvedRecord> {
+export function loadSolvedFromLocal(): SolvedByModeMap {
   return readLocal();
 }
