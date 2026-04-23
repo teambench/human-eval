@@ -40,8 +40,18 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
   const [chatWidth, setChatWidth] = useState(340);
   const [terminalHeight, setTerminalHeight] = useState(200);
 
+  // Progress flags — drive the phase-aware spotlight hints. Local state
+  // is fine: if the participant reloads mid-task the hints simply re-appear
+  // once, which is no worse than the initial onboarding cue.
+  const [hasEdited, setHasEdited] = useState(false);
+  const [hasRunCommand, setHasRunCommand] = useState(false);
+
   const currentFile = files.find(f => f.path === selectedFile);
   const canEdit = session.phase === 'execution';
+
+  const needsEditAttention = canEdit && !hasEdited;
+  const needsTerminalAttention = canEdit && !hasRunCommand;
+  const needsMarkDoneAttention = canEdit && hasEdited && hasRunCommand;
 
   const handleMarkDone = () => {
     onLog('mark_done');
@@ -88,9 +98,11 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
           {canEdit && (
             <button
               onClick={handleMarkDone}
+              className={needsMarkDoneAttention ? 'tb-spotlight' : undefined}
               style={{
                 background: '#f59e0b', color: '#000', border: 'none', borderRadius: 4,
                 padding: '6px 16px', cursor: 'pointer', fontWeight: 700, fontSize: 12,
+                ['--tb-spot-rgb' as any]: '245, 158, 11',
               }}
             >
               Mark Done
@@ -102,8 +114,22 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
       {/* Main content */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {/* Left: File tree */}
-        <div style={{ width: fileTreeWidth, minWidth: 120, maxWidth: 350 }}>
-          <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
+        <div
+          className={needsEditAttention ? 'tb-spotlight' : undefined}
+          style={{
+            width: fileTreeWidth, minWidth: 120, maxWidth: 350,
+            display: 'flex', flexDirection: 'column',
+            ['--tb-spot-rgb' as any]: '245, 158, 11',
+          }}
+        >
+          {needsEditAttention && (
+            <div className="tb-spot-hint" style={{ ['--tb-spot-rgb' as any]: '245, 158, 11' }}>
+              📝 Edit the files listed below
+            </div>
+          )}
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
+          </div>
         </div>
 
         <Resizer direction="horizontal" onResize={useCallback((d: number) => setFileTreeWidth(w => Math.max(120, Math.min(350, w + d))), [])} />
@@ -169,7 +195,7 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
                 content={currentFile.content}
                 language={currentFile.language}
                 readOnly={!canEdit || currentFile.readOnly}
-                onChange={canEdit && !currentFile.readOnly ? v => onUpdateFile(currentFile.path, v) : undefined}
+                onChange={canEdit && !currentFile.readOnly ? v => { if (!hasEdited) setHasEdited(true); onUpdateFile(currentFile.path, v); } : undefined}
               />
             ) : (
               <div style={{ padding: 24, color: '#888' }}>
@@ -185,20 +211,25 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
           {/* Bottom panel: Terminal / Brief */}
           <div style={{ height: terminalHeight, minHeight: 80, display: 'flex', flexDirection: 'column' }}>
             <div style={{ display: 'flex', background: '#181825', borderBottom: '1px solid #333' }}>
-              {(['brief', 'terminal'] as const).map(tab => (
-                <button
-                  key={tab}
-                  onClick={() => setBottomTab(tab)}
-                  style={{
-                    padding: '6px 16px', background: bottomTab === tab ? '#1e1e2e' : 'transparent',
-                    color: bottomTab === tab ? '#cdd6f4' : '#888', border: 'none',
-                    borderBottom: bottomTab === tab ? '2px solid #f59e0b' : '2px solid transparent',
-                    cursor: 'pointer', fontSize: 12, fontWeight: 600, textTransform: 'capitalize',
-                  }}
-                >
-                  {tab === 'brief' ? 'Task Brief' : 'Terminal'}
-                </button>
-              ))}
+              {(['brief', 'terminal'] as const).map(tab => {
+                const highlight = tab === 'terminal' && needsTerminalAttention;
+                return (
+                  <button
+                    key={tab}
+                    onClick={() => setBottomTab(tab)}
+                    className={highlight ? 'tb-spotlight' : undefined}
+                    style={{
+                      padding: '6px 16px', background: bottomTab === tab ? '#1e1e2e' : 'transparent',
+                      color: bottomTab === tab ? '#cdd6f4' : '#888', border: 'none',
+                      borderBottom: bottomTab === tab ? '2px solid #f59e0b' : '2px solid transparent',
+                      cursor: 'pointer', fontSize: 12, fontWeight: 600, textTransform: 'capitalize',
+                      ['--tb-spot-rgb' as any]: '245, 158, 11',
+                    }}
+                  >
+                    {tab === 'brief' ? 'Task Brief' : 'Terminal'}
+                  </button>
+                );
+              })}
             </div>
             <div style={{ flex: 1, overflow: 'hidden' }}>
               {bottomTab === 'brief' ? (
@@ -209,7 +240,7 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
                   taskId={session.taskConfig.taskId}
                   files={files.map(f => ({ path: f.path, content: f.content }))}
                   disabled={false}
-                  onCommand={cmd => onLog('command_run', { command: cmd })}
+                  onCommand={cmd => { if (!hasRunCommand) setHasRunCommand(true); onLog('command_run', { command: cmd }); }}
                 />
               )}
             </div>

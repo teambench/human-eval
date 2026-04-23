@@ -75,9 +75,19 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
   const [fileTreeWidth, setFileTreeWidth] = useState(200);
   const [terminalHeight, setTerminalHeight] = useState(180);
 
+  // Spotlight progress: guide first-time solo participants from editing
+  // through testing to grading. Local state resets on reload, so a
+  // reloaded participant sees the onboarding hints once more — fine.
+  const [hasEdited, setHasEdited] = useState(false);
+  const [hasRunCommand, setHasRunCommand] = useState(false);
+
   const currentFile = files.find(f => f.path === selectedFile);
   // Terminal stays active until user clicks "Finish Session"
   const isActive = session.phase !== 'lobby' && !finished;
+
+  const needsEditAttention = isActive && !gradeResult && !hasEdited;
+  const needsTerminalAttention = isActive && !gradeResult && hasEdited && !hasRunCommand;
+  const needsGradeAttention = isActive && !gradeResult && hasEdited && hasRunCommand;
 
   const handleSubmit = async () => {
     setGrading(true);
@@ -177,10 +187,12 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
               <button
                 onClick={handleSubmit}
                 disabled={grading}
+                className={needsGradeAttention ? 'tb-spotlight' : undefined}
                 style={{
                   width: '100%', background: grading ? '#555' : '#cba6f7', color: '#fff',
                   border: 'none', borderRadius: 6, padding: '10px', cursor: grading ? 'wait' : 'pointer',
                   fontWeight: 700, fontSize: 14,
+                  ['--tb-spot-rgb' as any]: '203, 166, 247',
                 }}
               >
                 {grading ? 'Grading...' : 'Submit & Grade'}
@@ -271,8 +283,22 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
 
         {/* Center: File tree + Editor + Terminal */}
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-          <div style={{ width: fileTreeWidth, minWidth: 120, maxWidth: 350 }}>
-            <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
+          <div
+            className={needsEditAttention ? 'tb-spotlight' : undefined}
+            style={{
+              width: fileTreeWidth, minWidth: 120, maxWidth: 350,
+              display: 'flex', flexDirection: 'column',
+              ['--tb-spot-rgb' as any]: '203, 166, 247',
+            }}
+          >
+            {needsEditAttention && (
+              <div className="tb-spot-hint" style={{ ['--tb-spot-rgb' as any]: '203, 166, 247' }}>
+                📝 Pick a file and start editing
+              </div>
+            )}
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
+            </div>
           </div>
 
           <Resizer direction="horizontal" onResize={useCallback((d: number) => setFileTreeWidth(w => Math.max(120, Math.min(350, w + d))), [])} />
@@ -307,7 +333,7 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
                   content={currentFile.content}
                   language={currentFile.language}
                   readOnly={!isActive || currentFile.readOnly}
-                  onChange={isActive && !currentFile.readOnly ? v => onUpdateFile(currentFile.path, v) : undefined}
+                  onChange={isActive && !currentFile.readOnly ? v => { if (!hasEdited) setHasEdited(true); onUpdateFile(currentFile.path, v); } : undefined}
                 />
               ) : (
                 <div style={{ padding: 24, color: '#888' }}>Select a file to edit</div>
@@ -316,14 +342,28 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
 
             <Resizer direction="vertical" onResize={useCallback((d: number) => setTerminalHeight(h => Math.max(80, Math.min(500, h - d))), [])} />
 
-            <div style={{ height: terminalHeight, minHeight: 80 }}>
-              <Terminal
-                sessionId={session.sessionId}
-                taskId={session.taskConfig.taskId}
-                files={files.map(f => ({ path: f.path, content: f.content }))}
-                disabled={finished}
-                onCommand={cmd => onLog('command_run', { command: cmd })}
-              />
+            <div
+              className={needsTerminalAttention ? 'tb-spotlight' : undefined}
+              style={{
+                height: terminalHeight, minHeight: 80,
+                display: 'flex', flexDirection: 'column',
+                ['--tb-spot-rgb' as any]: '203, 166, 247',
+              }}
+            >
+              {needsTerminalAttention && (
+                <div className="tb-spot-hint" style={{ ['--tb-spot-rgb' as any]: '203, 166, 247' }}>
+                  ▶ Run your tests here before grading (e.g. `pytest -x`)
+                </div>
+              )}
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <Terminal
+                  sessionId={session.sessionId}
+                  taskId={session.taskConfig.taskId}
+                  files={files.map(f => ({ path: f.path, content: f.content }))}
+                  disabled={finished}
+                  onCommand={cmd => { if (!hasRunCommand) setHasRunCommand(true); onLog('command_run', { command: cmd }); }}
+                />
+              </div>
             </div>
           </div>
         </div>

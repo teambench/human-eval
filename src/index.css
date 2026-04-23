@@ -95,3 +95,40 @@ body {
 .markdown-content th {
   background: #313244;
 }
+
+/* Spotlight attention hint.
+ *
+ * Pulsing glow used on role-specific UI elements so a new participant
+ * knows which region needs their action in the current phase. One-shot:
+ * the consumer turns it off (renders without .tb-spotlight) once the
+ * associated action has been taken. Color is per-role via the
+ * --tb-spot-rgb custom property (r,g,b triple for rgba interpolation).
+ *
+ * Deliberately soft: small radius, long period. A loud flash is
+ * distracting over a 15–30 min task.
+ */
+@keyframes tb-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(var(--tb-spot-rgb), 0.55); }
+  70%  { box-shadow: 0 0 0 8px rgba(var(--tb-spot-rgb), 0);  }
+  100% { box-shadow: 0 0 0 0 rgba(var(--tb-spot-rgb), 0);    }
+}
+
+.tb-spotlight {
+  animation: tb-pulse 1.8s ease-out infinite;
+  border-radius: 6px;
+  outline: 1px solid rgba(var(--tb-spot-rgb), 0.45);
+  outline-offset: 0;
+}
+
+/* Small instruction label shown inside a spotlighted region's header. */
+.tb-spot-hint {
+  font-size: 11px;
+  color: rgb(var(--tb-spot-rgb));
+  font-weight: 600;
+  padding: 4px 10px;
+  background: rgba(var(--tb-spot-rgb), 0.12);
+  border-bottom: 1px solid rgba(var(--tb-spot-rgb), 0.28);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}

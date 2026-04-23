@@ -22,9 +22,17 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
   const [activeTab, setActiveTab] = useState<'spec' | 'files'>('spec');
   const [verdict, setVerdict] = useState<'pass' | 'fail' | ''>('');
   const [notes, setNotes] = useState('');
+  const [viewedWorkspace, setViewedWorkspace] = useState(false);
 
   const currentFile = files.find(f => f.path === selectedFile);
   const canVerify = session.phase === 'verification';
+
+  // Spotlights for the Verifier: (1) the Workspace tab (they start on Spec),
+  // (2) the verdict buttons once they've inspected the work, (3) the submit
+  // button once they've chosen PASS/FAIL.
+  const needsWorkspaceAttention = canVerify && !viewedWorkspace;
+  const needsVerdictAttention = canVerify && viewedWorkspace && !verdict;
+  const needsSubmitAttention = canVerify && !!verdict;
 
   const handleSubmitVerdict = () => {
     if (!verdict) return;
@@ -84,20 +92,28 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
           {/* Tabs */}
           <div style={{ display: 'flex', background: '#181825', borderBottom: '1px solid #333' }}>
-            {(['spec', 'files'] as const).map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                style={{
-                  padding: '8px 20px', background: activeTab === tab ? '#1e1e2e' : 'transparent',
-                  color: activeTab === tab ? '#cdd6f4' : '#888', border: 'none',
-                  borderBottom: activeTab === tab ? '2px solid #10b981' : '2px solid transparent',
-                  cursor: 'pointer', fontSize: 13, fontWeight: 600, textTransform: 'capitalize',
-                }}
-              >
-                {tab === 'spec' ? 'Specification' : 'Workspace (Read-Only)'}
-              </button>
-            ))}
+            {(['spec', 'files'] as const).map(tab => {
+              const highlight = tab === 'files' && needsWorkspaceAttention;
+              return (
+                <button
+                  key={tab}
+                  onClick={() => {
+                    setActiveTab(tab);
+                    if (tab === 'files' && !viewedWorkspace) setViewedWorkspace(true);
+                  }}
+                  className={highlight ? 'tb-spotlight' : undefined}
+                  style={{
+                    padding: '8px 20px', background: activeTab === tab ? '#1e1e2e' : 'transparent',
+                    color: activeTab === tab ? '#cdd6f4' : '#888', border: 'none',
+                    borderBottom: activeTab === tab ? '2px solid #10b981' : '2px solid transparent',
+                    cursor: 'pointer', fontSize: 13, fontWeight: 600, textTransform: 'capitalize',
+                    ['--tb-spot-rgb' as any]: '16, 185, 129',
+                  }}
+                >
+                  {tab === 'spec' ? 'Specification' : 'Workspace (Read-Only)'}
+                </button>
+              );
+            })}
           </div>
 
           {/* Content */}
@@ -120,6 +136,19 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
             )}
           </div>
 
+          {/* Hybrid banner: tell the human their teammates are AI agents. */}
+          {session.mode === 'hybrid' && (
+            <div style={{
+              padding: '10px 14px', background: 'rgba(16,185,129,0.12)',
+              borderTop: '1px solid rgba(16,185,129,0.3)',
+              color: '#cdd6f4', fontSize: 12, lineHeight: 1.5,
+            }}>
+              <strong style={{ color: '#10b981' }}>Hybrid mode.</strong>{' '}
+              Your Planner and Executor are AI agents. Watch their work in chat + Workspace,
+              then grade the result. If you submit FAIL, your notes will be sent back to
+              the AI Executor for another attempt (up to 2 remediations).
+            </div>
+          )}
           {/* Phase-gating banner for non-verification phases. Without this,
               the Verifier sits and waits without any cue as to what the
               other roles are doing. */}
@@ -129,7 +158,9 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
               borderTop: '1px solid rgba(99,102,241,0.3)',
               color: '#cdd6f4', fontSize: 12, lineHeight: 1.5,
             }}>
-              <strong style={{ color: '#a5b4fc' }}>Planner is analyzing.</strong>{' '}
+              <strong style={{ color: '#a5b4fc' }}>
+                {session.mode === 'hybrid' ? 'AI Planner is analyzing.' : 'Planner is analyzing.'}
+              </strong>{' '}
               You can read the Specification now. Once the Executor marks the task done, you'll
               review their work and submit a verdict.
             </div>
@@ -140,7 +171,9 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
               borderTop: '1px solid rgba(245,158,11,0.3)',
               color: '#cdd6f4', fontSize: 12, lineHeight: 1.5,
             }}>
-              <strong style={{ color: '#fbbf24' }}>Executor is implementing.</strong>{' '}
+              <strong style={{ color: '#fbbf24' }}>
+                {session.mode === 'hybrid' ? 'AI Executor is implementing.' : 'Executor is implementing.'}
+              </strong>{' '}
               Follow along in the Workspace tab — files update in real time. You can ask
               clarifying questions via chat. You'll submit your verdict after the Executor
               marks done.
@@ -154,7 +187,13 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
               <div style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4', marginBottom: 8 }}>
                 Submit Verification Verdict
               </div>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              <div
+                className={needsVerdictAttention ? 'tb-spotlight' : undefined}
+                style={{
+                  display: 'flex', gap: 8, marginBottom: 8, padding: 4,
+                  ['--tb-spot-rgb' as any]: '16, 185, 129',
+                }}
+              >
                 <button
                   onClick={() => setVerdict('pass')}
                   style={{
@@ -191,10 +230,12 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
               <button
                 onClick={handleSubmitVerdict}
                 disabled={!verdict}
+                className={needsSubmitAttention ? 'tb-spotlight' : undefined}
                 style={{
                   marginTop: 8, background: verdict ? '#10b981' : '#555', color: '#000',
                   border: 'none', borderRadius: 6, padding: '10px 32px', cursor: verdict ? 'pointer' : 'not-allowed',
                   fontWeight: 700, fontSize: 14,
+                  ['--tb-spot-rgb' as any]: '16, 185, 129',
                 }}
               >
                 {verdict === 'fail' ? 'Send Back to Executor' : 'Submit & Complete'}
