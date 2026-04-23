@@ -98,26 +98,48 @@ body {
 
 /* Spotlight attention hint.
  *
- * Pulsing glow used on role-specific UI elements so a new participant
- * knows which region needs their action in the current phase. One-shot:
- * the consumer turns it off (renders without .tb-spotlight) once the
- * associated action has been taken. Color is per-role via the
- * --tb-spot-rgb custom property (r,g,b triple for rgba interpolation).
+ * Pulsing glow on role-specific UI elements so a new participant knows
+ * which region needs their action in the current phase. One-shot: the
+ * consumer turns it off (renders without .tb-spotlight) once the action
+ * has happened. Color is per-role via --tb-spot-rgb (r,g,b triple).
  *
- * Deliberately soft: small radius, long period. A loud flash is
- * distracting over a 15–30 min task.
+ * Implementation notes:
+ *   1. Uses a ::after pseudo-element layered on top of the element's
+ *      contents (z-index 100, pointer-events: none so clicks pass
+ *      through). Earlier attempts used outward box-shadow (clipped by
+ *      the numerous overflow:hidden flex parents) or inset box-shadow
+ *      (covered by opaque child backgrounds like ChatPanel's #1e1e2e).
+ *      An overlay pseudo is the only approach visible in both cases.
+ *   2. The parent needs position:relative — handled here, no caller
+ *      action required.
+ *   3. Border (not outline) on the pseudo so shape follows border-radius.
+ *
+ * Soft by design: 1.8s pulse, thin border + subtle inner glow. No
+ * aggressive flashing during a 15–30 min task.
  */
 @keyframes tb-pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(var(--tb-spot-rgb), 0.55); }
-  70%  { box-shadow: 0 0 0 8px rgba(var(--tb-spot-rgb), 0);  }
-  100% { box-shadow: 0 0 0 0 rgba(var(--tb-spot-rgb), 0);    }
+  /* Border-only pulse — readable overlays on text/buttons. Earlier attempts
+   * added an inset shadow for extra glow, but that tinted the whole button
+   * interior (e.g. indigo wash over "Hand Off to Executor") hurting
+   * readability. A hard border alternating alpha is unambiguous and
+   * doesn't touch the content layer. */
+  0%, 100% { border-color: rgba(var(--tb-spot-rgb), 1.0);  }
+  50%      { border-color: rgba(var(--tb-spot-rgb), 0.25); }
 }
 
 .tb-spotlight {
-  animation: tb-pulse 1.8s ease-out infinite;
+  position: relative;
+}
+
+.tb-spotlight::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 2px solid rgba(var(--tb-spot-rgb), 0.7);
   border-radius: 6px;
-  outline: 1px solid rgba(var(--tb-spot-rgb), 0.45);
-  outline-offset: 0;
+  animation: tb-pulse 1.8s ease-in-out infinite;
+  z-index: 100;
 }
 
 /* Small instruction label shown inside a spotlighted region's header. */
