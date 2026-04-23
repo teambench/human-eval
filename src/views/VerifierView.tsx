@@ -104,13 +104,19 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
   const canVerify = session.phase === 'verification';
   const isHybrid = session.mode === 'hybrid';
   const agentActivity = useAgentActivity(session.sessionId, isHybrid);
-  const initialFiles = useInitialWorkspace(session.sessionId, isHybrid);
+  // Initial workspace subscription: enabled for ALL team-style modes (team
+  // + hybrid) so the Verifier can see a +/- diff against the pre-execution
+  // baseline. Populated by useFirebaseSession's fetchOnce on first staging
+  // complete. Solo mode has no Verifier role so this is never reached.
+  const initialFiles = useInitialWorkspace(session.sessionId, true);
   const lastGrade = useLastGrade(session.sessionId, isHybrid);
-  // Default to diff view in hybrid mode once there's a baseline to compare.
+  // Default ON whenever a baseline exists — in team mode the Verifier
+  // should see diffs in real time as the Executor edits, not have to
+  // hunt for a toggle.
   const [showDiff, setShowDiff] = useState(false);
   useEffect(() => {
-    if (isHybrid && Object.keys(initialFiles).length > 0) setShowDiff(true);
-  }, [isHybrid, initialFiles]);
+    if (Object.keys(initialFiles).length > 0) setShowDiff(true);
+  }, [initialFiles]);
   const fileIsChanged = !!(currentFile && initialFiles[currentFile.path] != null
                            && initialFiles[currentFile.path] !== currentFile.content);
 
@@ -214,14 +220,14 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                 </div>
                 <Resizer direction="horizontal" onResize={handleResize} />
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                  {isHybrid && currentFile && (
+                  {currentFile && Object.keys(initialFiles).length > 0 && (
                     <div style={{
                       padding: '4px 10px', background: '#181825', borderBottom: '1px solid #313244',
                       fontSize: 11, display: 'flex', alignItems: 'center', gap: 10, color: '#a6adc8',
                     }}>
                       <span>{currentFile.path}</span>
                       {fileIsChanged ? (
-                        <span style={{ color: '#fbbf24', fontWeight: 600 }}>● modified by AI</span>
+                        <span style={{ color: '#fbbf24', fontWeight: 600 }}>● modified{isHybrid ? ' by AI' : ' by Executor'}</span>
                       ) : initialFiles[currentFile.path] != null ? (
                         <span style={{ color: '#6c7086' }}>unchanged</span>
                       ) : (
@@ -240,7 +246,7 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                   )}
                   <div style={{ flex: 1 }}>
                     {currentFile ? (
-                      isHybrid && showDiff ? (
+                      showDiff && Object.keys(initialFiles).length > 0 ? (
                         <DiffEditor
                           original={initialFiles[currentFile.path] ?? ''}
                           modified={currentFile.content}

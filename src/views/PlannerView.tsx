@@ -36,12 +36,12 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
 
   const currentFile = files.find(f => f.path === selectedFile);
 
-  // Spotlight targets: the Planner's job is to (a) send a plan via chat,
-  // then (b) advance the phase. Derive from messages so it survives tab
-  // reloads and Firebase echoes without a local "I saw this" flag.
+  // Chat is the Planner's primary action — drawing attention there is
+  // more intuitive than glowing the Hand Off button (the button glow
+  // made participants think "click this first" without writing a plan).
+  // Derive from messages so reloads preserve state.
   const hasSentPlanMessage = messages.some((m: any) => m.from === 'planner');
   const needsChatAttention = session.phase === 'planning' && !hasSentPlanMessage;
-  const needsHandoffAttention = session.phase === 'planning' && hasSentPlanMessage;
 
   const handleSubmitPlan = () => {
     onLog('submit_plan');
@@ -139,11 +139,9 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
               </p>
               <button
                 onClick={handleSubmitPlan}
-                className={needsHandoffAttention ? 'tb-spotlight' : undefined}
                 style={{
                   background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6,
                   padding: '10px 32px', cursor: 'pointer', fontWeight: 700, fontSize: 14,
-                  ['--tb-spot-rgb' as any]: '99, 102, 241',
                 }}
               >
                 Hand Off to Executor →
@@ -176,24 +174,24 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
 
         {/* Right: Chat */}
         <div
-          className={needsChatAttention ? 'tb-spotlight' : undefined}
+          className={needsChatAttention ? 'tb-spotlight-strong' : undefined}
           style={{
             width: 340, borderLeft: '1px solid #333',
             display: 'flex', flexDirection: 'column',
             ['--tb-spot-rgb' as any]: '99, 102, 241',
           }}
         >
-          {needsChatAttention && (
-            <div className="tb-spot-hint" style={{ ['--tb-spot-rgb' as any]: '99, 102, 241' }}>
-              💬 Write your plan here — messages go to the Executor
-            </div>
-          )}
           <div style={{ flex: 1, minHeight: 0 }}>
             <ChatPanel
               role="planner"
               messages={messages}
               onSend={onSendMessage}
               disabled={session.phase === 'lobby' || session.phase === 'completed'}
+              systemNote={
+                session.phase === 'planning'
+                  ? '💡 You are the Planner. Analyze the Specification on the left, then post your plan here. Your messages are the plan — the Executor will read them and implement the fix. Click "Hand Off to Executor →" below when your plan is complete.'
+                  : undefined
+              }
             />
           </div>
         </div>

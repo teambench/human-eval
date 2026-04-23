@@ -7,6 +7,11 @@ interface ChatPanelProps {
   messages: ChatMessage[];
   onSend: (to: Role | 'all', content: string) => void;
   disabled?: boolean;
+  // Persistent, non-dismissible instruction rendered at the top of the
+  // message list. Tells each role what the chat is FOR in their current
+  // phase (e.g. for the Planner: "write your plan here — the Executor
+  // will read these messages").
+  systemNote?: string;
 }
 
 const ROLE_COLORS: Record<Role, string> = {
@@ -23,7 +28,7 @@ const ROLE_LABELS: Record<Role, string> = {
   oracle: 'Oracle',
 };
 
-export function ChatPanel({ role, messages, onSend, disabled }: ChatPanelProps) {
+export function ChatPanel({ role, messages, onSend, disabled, systemNote }: ChatPanelProps) {
   const [text, setText] = useState('');
   const [target, setTarget] = useState<Role | 'all'>('all');
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -46,6 +51,20 @@ export function ChatPanel({ role, messages, onSend, disabled }: ChatPanelProps) 
         Chat
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {systemNote && (
+          <div style={{
+            alignSelf: 'stretch',
+            background: 'rgba(205, 214, 244, 0.06)',
+            border: '1px dashed rgba(205, 214, 244, 0.2)',
+            color: '#cdd6f4',
+            padding: '8px 12px',
+            borderRadius: 8,
+            fontSize: 12,
+            lineHeight: 1.5,
+          }}>
+            {systemNote}
+          </div>
+        )}
         {messages.map(msg => (
           <div key={msg.id} style={{
             alignSelf: msg.from === role ? 'flex-end' : 'flex-start',

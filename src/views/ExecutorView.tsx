@@ -51,7 +51,12 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
 
   const needsEditAttention = canEdit && !hasEdited;
   const needsTerminalAttention = canEdit && !hasRunCommand;
-  const needsMarkDoneAttention = canEdit && hasEdited && hasRunCommand;
+  // Mark Done pulses for the entire execution phase. Previously gated on
+  // hasEdited + hasRunCommand, which meant a participant who thought the
+  // code was already correct (no edits needed) never saw the glow and
+  // didn't know how to finish. Always-on while canEdit makes the
+  // completion step unambiguous.
+  const needsMarkDoneAttention = canEdit;
 
   const handleMarkDone = () => {
     onLog('mark_done');
@@ -98,7 +103,7 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
           {canEdit && (
             <button
               onClick={handleMarkDone}
-              className={needsMarkDoneAttention ? 'tb-spotlight' : undefined}
+              className={needsMarkDoneAttention ? 'tb-spotlight-strong' : undefined}
               style={{
                 background: '#f59e0b', color: '#000', border: 'none', borderRadius: 4,
                 padding: '6px 16px', cursor: 'pointer', fontWeight: 700, fontSize: 12,
@@ -117,7 +122,7 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
         <div
           className={needsEditAttention ? 'tb-spotlight' : undefined}
           style={{
-            width: fileTreeWidth, minWidth: 120, maxWidth: 350,
+            width: fileTreeWidth, minWidth: 140, maxWidth: 500,
             display: 'flex', flexDirection: 'column',
             ['--tb-spot-rgb' as any]: '245, 158, 11',
           }}
@@ -132,7 +137,7 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
           </div>
         </div>
 
-        <Resizer direction="horizontal" onResize={useCallback((d: number) => setFileTreeWidth(w => Math.max(120, Math.min(350, w + d))), [])} />
+        <Resizer direction="horizontal" onResize={useCallback((d: number) => setFileTreeWidth(w => Math.max(140, Math.min(500, w + d))), [])} />
 
         {/* Center: Editor + Terminal */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
@@ -256,6 +261,13 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
             messages={messages}
             onSend={onSendMessage}
             disabled={session.phase === 'lobby' || session.phase === 'completed'}
+            systemNote={
+              session.phase === 'planning'
+                ? '💡 You are the Executor. The Planner is analyzing the task. You will get a plan from them here shortly — read it, then edit the files and run tests to implement it. You can ask clarifying questions in chat.'
+                : session.phase === 'execution'
+                ? '💡 Execute the Planner\'s plan: edit the files on the left, run tests in the Terminal tab, then click "Mark Done" in the header when finished.'
+                : undefined
+            }
           />
         </div>
       </div>

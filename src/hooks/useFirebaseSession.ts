@@ -334,6 +334,27 @@ export function useFirebaseSession() {
             if (nextSpec === prev.specMd && nextBrief === prev.briefMd) return prev;
             return { ...prev, specMd: nextSpec, briefMd: nextBrief };
           });
+          // Capture the pre-execution snapshot so the Verifier can render
+          // a +/- diff against it as the Executor edits. Only write if
+          // nothing's there yet — whichever role's fetchOnce completes
+          // first wins, subsequent roles skip. Content is deterministic
+          // post-staging (same container state) so the first-writer
+          // pattern is race-safe. Skipped for hybrid mode where the
+          // backend agent_runner owns the baseline write.
+          try {
+            const initRef = ref(db, `teambench/sessions/${sessionId}/initialWorkspace`);
+            const initSnap = await get(initRef);
+            if (!initSnap.exists()) {
+              const initData: Record<string, { path: string; content: string }> = {};
+              for (const f of entries) {
+                const key = f.path.replace(/[.\/\[\]#$]/g, '_');
+                initData[key] = { path: f.path, content: f.content };
+              }
+              await set(initRef, initData);
+            }
+          } catch {
+            // best-effort — diff view gracefully degrades to plain view
+          }
           return true;
         }
         return false; // still staging — retry

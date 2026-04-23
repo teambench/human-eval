@@ -126,6 +126,22 @@ body {
   border-radius: 6px;
 }
 
+/* Stronger variant — thicker stroke, faster pulse. Use when a region
+ * is the PRIMARY action for the current phase (e.g. Planner's chat in
+ * planning phase, Executor's Mark Done button). Still outline-only so
+ * it can't obscure content. */
+@keyframes tb-pulse-strong {
+  0%, 100% { outline-color: rgba(var(--tb-spot-rgb), 1.0);  }
+  50%      { outline-color: rgba(var(--tb-spot-rgb), 0.15); }
+}
+
+.tb-spotlight-strong {
+  outline: 3px solid rgba(var(--tb-spot-rgb), 0.85);
+  outline-offset: -3px;
+  animation: tb-pulse-strong 1.2s ease-in-out infinite;
+  border-radius: 6px;
+}
+
 /* Small instruction label shown inside a spotlighted region's header. */
 .tb-spot-hint {
   font-size: 11px;
