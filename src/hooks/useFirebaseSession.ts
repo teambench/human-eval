@@ -246,6 +246,36 @@ export function useFirebaseSession() {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
+    // Ensure the backend session/container exists before we poll /files.
+    //
+    // In team mode, the Docker container is provisioned by POST /create,
+    // but the only frontend caller of /create is the <Terminal> component
+    // inside ExecutorView — and Terminal is gated behind a tab that
+    // defaults to "Task Brief". So if the Planner or Verifier joins
+    // before the Executor explicitly clicks the Terminal tab, the
+    // container never gets created and /files returns 404 for the whole
+    // 2-min retry window — the Planner sees an empty FileTree.
+    //
+    // /create is idempotent (`if session_id in sessions: return exists`),
+    // so it's safe for any role to call. The Executor's Terminal will
+    // still call it later and simply get the "exists" response.
+    const ensureContainer = async () => {
+      try {
+        await fetch(
+          `${BACKEND_API()}/api/session/${sessionId}/create?task_id=${encodeURIComponent(task.taskId)}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: {} }),
+          }
+        );
+      } catch {
+        // Best-effort — the poll below still retries. If the backend is
+        // down entirely, the participant will see an empty tree and the
+        // error will surface when they try to use the terminal.
+      }
+    };
+
     const fetchOnce = async (): Promise<boolean> => {
       try {
         const r = await fetch(`${BACKEND_API()}/api/session/${sessionId}/files`);
@@ -287,6 +317,10 @@ export function useFirebaseSession() {
       if (attempt >= 120) return;
       timer = setTimeout(() => loop(attempt + 1), 1000);
     };
+    // Kick off container provisioning, then start polling. We don't await
+    // ensureContainer — /create can take a few seconds to stage + boot,
+    // and /files returning 404 is self-healing via the poll loop.
+    ensureContainer();
     loop(0);
 
     return () => {
