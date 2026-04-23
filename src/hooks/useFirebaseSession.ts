@@ -422,6 +422,18 @@ export function useFirebaseSession() {
     if (!sessionId || !role) return;
     const clean = sanitizeFileContent(content);
     const key = path.replace(/[.\/\[\]#$]/g, '_');
+    // Update local React state synchronously. For oracle/executor the Firebase
+    // /files echo is intentionally not subscribed (see the role-gated
+    // subscription above), so without this write the React `files` state stays
+    // frozen at the initial task contents. On a file switch, @monaco-editor/react
+    // rebinds setModel→setValue and calls setValue(value-prop); if value-prop
+    // is the stale initial content while Monaco's per-file model holds the
+    // user's edits, the setValue overwrites those edits. Storing the edit in
+    // state synchronously keeps value-prop === model contents, making the
+    // sync a no-op on switch-back. This is the "local state is the single
+    // source of truth" invariant promised by the comment at the /files
+    // subscription above — previously asserted but not implemented.
+    setFiles(prev => prev.map(f => f.path === path ? { ...f, content: clean } : f));
     await update(ref(db, `teambench/sessions/${sessionId}/files/${key}`), { content: clean });
     addLog(sessionId, role, 'file_edit', { path, contentLength: clean.length });
     // Sync edits to the container workspace so terminal + grader see them.
