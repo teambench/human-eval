@@ -107,7 +107,9 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
               style={{
                 background: '#f59e0b', color: '#000', border: 'none', borderRadius: 4,
                 padding: '6px 16px', cursor: 'pointer', fontWeight: 700, fontSize: 12,
-                ['--tb-spot-rgb' as any]: '245, 158, 11',
+                // The button background is amber (#f59e0b). An amber outline
+                // would be invisible against it, so use white for contrast.
+                ['--tb-spot-rgb' as any]: '255, 255, 255',
               }}
             >
               Mark Done
