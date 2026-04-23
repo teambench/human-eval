@@ -877,10 +877,14 @@ async def grade_session(session_id: str):
         task_root = Path(task_dir_resolved)
         with tarfile.open(fileobj=buf, mode="w") as tar:
             # Add every file under task_dir, dedenting shell scripts.
+            saw_grade_sh = False
             for fp in task_root.rglob("*"):
                 if not fp.is_file():
                     continue
-                arc = "task/" + str(fp.relative_to(task_root)).replace(os.sep, "/")
+                rel = fp.relative_to(task_root)
+                if str(rel) == "grade.sh":
+                    saw_grade_sh = True
+                arc = "task/" + str(rel).replace(os.sep, "/")
                 if fp.suffix == ".sh":
                     data = _dedent_bytes(fp)
                 else:
@@ -888,6 +892,21 @@ async def grade_session(session_id: str):
                 info = tarfile.TarInfo(name=arc)
                 info.size = len(data)
                 info.mode = 0o755 if fp.suffix == ".sh" else 0o644
+                tar.addfile(info, io.BytesIO(data))
+
+            # RDS* (and any task where spec/brief/workspace live in a
+            # seeded dir but grade.sh lives in a sibling shim dir) would
+            # otherwise ship `task/` without its grade.sh — triggering
+            # "bash: /task/grade.sh: No such file or directory" at grade
+            # time. _stage_task_workspace already resolves grade_sh_path
+            # across both dirs; honor it here by adding the resolved
+            # grade.sh explicitly when the rglob above didn't pick it up.
+            if not saw_grade_sh and grade_sh and os.path.isfile(grade_sh):
+                grade_path_obj = Path(grade_sh)
+                data = _dedent_bytes(grade_path_obj)
+                info = tarfile.TarInfo(name="task/grade.sh")
+                info.size = len(data)
+                info.mode = 0o755
                 tar.addfile(info, io.BytesIO(data))
 
             helper = Path(TEAMBENCH_ROOT) / "harness" / "grader_helpers.sh"
