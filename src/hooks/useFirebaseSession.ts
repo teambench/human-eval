@@ -315,9 +315,17 @@ export function useFirebaseSession() {
         }));
         if (entries.length === 0) return false;
         if (cancelled) return true;
+        // Publish partial staging so the tree isn't blank while we wait.
         setFiles(entries);
         const specFile = entries.find(f => f.path === 'spec.md');
         const briefFile = entries.find(f => f.path === 'brief.md');
+        // brief.md / spec.md are the LAST things the backend writes when
+        // staging a task. Exiting this poll as soon as entries.length > 0
+        // could snapshot a half-staged workspace — exactly what
+        // participants saw for GH1002_scipy (only README_HUMAN.md +
+        // conftest.py visible, no .pyx target, briefMd stuck on
+        // "Loading task from backend..."). Use brief/spec presence as
+        // the real completion signal and keep polling until we see one.
         if (specFile || briefFile) {
           setTask(prev => {
             if (!prev) return prev;
@@ -326,8 +334,9 @@ export function useFirebaseSession() {
             if (nextSpec === prev.specMd && nextBrief === prev.briefMd) return prev;
             return { ...prev, specMd: nextSpec, briefMd: nextBrief };
           });
+          return true;
         }
-        return true;
+        return false; // still staging — retry
       } catch {
         return false;
       }

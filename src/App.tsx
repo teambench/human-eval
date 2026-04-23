@@ -46,11 +46,14 @@ export default function App() {
   );
   useEffect(() => { getRegion().then(setCurrentRegion); }, []);
 
-  // Floating region badge — bottom-right to avoid colliding with the
-  // progress bar and timer at the top of most views.
+  // Floating region badge — bottom-LEFT. Was bottom-right, but the
+  // three-pane role views (Planner/Executor/Verifier) put their chat
+  // panel flush with the right edge and the Send button lands at
+  // viewport bottom-right, behind the badge. Bottom-left is clear in
+  // all layouts (no side panel opens there).
   const regionBadge = (
     <div style={{
-      position: 'fixed', bottom: 8, right: 8, zIndex: 9999,
+      position: 'fixed', bottom: 8, left: 8, zIndex: 9999,
       background: '#1e1e2e', color: '#cdd6f4',
       border: '1px solid #313244', borderRadius: 6,
       padding: '4px 8px', fontSize: 10, fontFamily: 'monospace',

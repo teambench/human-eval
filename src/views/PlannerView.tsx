@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ChatPanel } from '../components/ChatPanel';
 import { MarkdownViewer } from '../components/MarkdownViewer';
 import { FileTree } from '../components/FileTree';
 import { CodeEditor } from '../components/CodeEditor';
 import { Timer } from '../components/Timer';
+import { Resizer } from '../components/Resizer';
 import { Onboarding, PLANNER_STEPS } from '../components/Onboarding';
 import { SessionState, Role, FileEntry } from '../types';
 
@@ -20,6 +21,9 @@ interface PlannerViewProps {
 export function PlannerView({ session, files, messages, onSendMessage, onPhaseChange, onLog, onLeave }: PlannerViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'spec' | 'files'>('spec');
+  // Planner's file-list width is user-resizable. Task paths like
+  // `scipy/spatial/transform/_rotation_cy.pyx` overrun the old fixed 200px.
+  const [fileTreeWidth, setFileTreeWidth] = useState(260);
 
   const currentFile = files.find(f => f.path === selectedFile);
 
@@ -103,9 +107,10 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
               <MarkdownViewer content={session.taskConfig.specMd} title="Full Task Specification" />
             ) : (
               <div style={{ display: 'flex', height: '100%' }}>
-                <div style={{ width: 200 }}>
+                <div style={{ width: fileTreeWidth, minWidth: 140, maxWidth: 500, overflow: 'hidden' }}>
                   <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
                 </div>
+                <Resizer direction="horizontal" onResize={useCallback((d: number) => setFileTreeWidth(w => Math.max(140, Math.min(500, w + d))), [])} />
                 <div style={{ flex: 1 }}>
                   {currentFile ? (
                     <CodeEditor path={currentFile.path} content={currentFile.content} language={currentFile.language} readOnly />
