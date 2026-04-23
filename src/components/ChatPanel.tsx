@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { Role, ChatMessage } from '../types';
 
 interface ChatPanelProps {
@@ -59,16 +60,15 @@ export function ChatPanel({ role, messages, onSend, disabled }: ChatPanelProps) 
               )}
               <span style={{ marginLeft: 8 }}>{new Date(msg.timestamp).toLocaleTimeString()}</span>
             </div>
-            <div style={{
+            <div className="tb-chat-md" style={{
               background: msg.from === role ? '#45475a' : '#313244',
               color: '#cdd6f4',
               padding: '8px 12px',
               borderRadius: 8,
               fontSize: 13,
-              whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
             }}>
-              {msg.content}
+              <ReactMarkdown>{msg.content}</ReactMarkdown>
             </div>
           </div>
         ))}

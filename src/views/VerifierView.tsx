@@ -59,8 +59,9 @@ interface LastGrade {
   ok?: boolean;
   verdict?: string;
   score?: number | null;
-  stdout?: string;
-  stderr?: string;
+  scoreDetail?: Record<string, unknown> | null;
+  exit_code?: number;
+  output?: string;
   error?: string;
   status?: number;
   timestamp?: number;
@@ -363,7 +364,19 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                 )}
                 {lastGrade.score != null && (
                   <span style={{ color: '#a6adc8', fontSize: 10 }}>
-                    score: {typeof lastGrade.score === 'number' ? lastGrade.score.toFixed(2) : String(lastGrade.score)}
+                    score: {(() => {
+                      const s: any = lastGrade.score;
+                      if (typeof s === 'number') return s.toFixed(2);
+                      if (typeof s === 'string') return s;
+                      // The grader can return a dict like {overall: 0.8, ...}.
+                      // Show the "overall" field if present; else JSON-stringify.
+                      if (s && typeof s === 'object') {
+                        if (typeof s.overall === 'number') return s.overall.toFixed(2);
+                        if (typeof s.score === 'number') return s.score.toFixed(2);
+                        return JSON.stringify(s).slice(0, 60);
+                      }
+                      return String(s);
+                    })()}
                   </span>
                 )}
                 {!lastGrade.ok && (
@@ -372,19 +385,28 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                   </span>
                 )}
               </div>
-              <details>
+              <details open>
                 <summary style={{ cursor: 'pointer', color: '#89b4fa', fontSize: 11 }}>
-                  stdout / stderr ({((lastGrade.stdout?.length || 0) + (lastGrade.stderr?.length || 0))} chars)
+                  grader output ({(lastGrade.output?.length || 0)} chars
+                  {lastGrade.exit_code != null ? `, exit ${lastGrade.exit_code}` : ''})
                 </summary>
                 <pre style={{
                   margin: '6px 0 0', padding: 8, background: '#11111b', borderRadius: 4,
                   fontSize: 10, fontFamily: 'ui-monospace, monospace',
-                  maxHeight: 180, overflow: 'auto', whiteSpace: 'pre-wrap',
+                  maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap',
                   color: '#cdd6f4',
                 }}>
-                  {lastGrade.stdout || ''}
-                  {lastGrade.stderr ? `\n--- stderr ---\n${lastGrade.stderr}` : ''}
+                  {lastGrade.output || '(grader produced no output)'}
                 </pre>
+                {lastGrade.scoreDetail && (
+                  <pre style={{
+                    margin: '6px 0 0', padding: 6, background: '#11111b', borderRadius: 4,
+                    fontSize: 10, fontFamily: 'ui-monospace, monospace',
+                    color: '#a6adc8',
+                  }}>
+                    {JSON.stringify(lastGrade.scoreDetail, null, 2)}
+                  </pre>
+                )}
               </details>
             </div>
           )}
