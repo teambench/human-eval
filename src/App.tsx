@@ -46,20 +46,21 @@ export default function App() {
   );
   useEffect(() => { getRegion().then(setCurrentRegion); }, []);
 
-  // Floating region badge — bottom-LEFT. Was bottom-right, but the
-  // three-pane role views (Planner/Executor/Verifier) put their chat
-  // panel flush with the right edge and the Send button lands at
-  // viewport bottom-right, behind the badge. Bottom-left is clear in
-  // all layouts (no side panel opens there).
+  // Floating region badge — top-center of the viewport. Earlier positions
+  // (bottom-right, bottom-left) overlapped with chat Send buttons and the
+  // Resizer handles of the three-pane role views. Top-center is clear
+  // across every view: the headers have left-aligned role badges and
+  // right-aligned Timer+Phase, nothing in the middle.
   const regionBadge = (
     <div style={{
-      position: 'fixed', bottom: 8, left: 8, zIndex: 9999,
+      position: 'fixed', top: 6, left: '50%', transform: 'translateX(-50%)',
+      zIndex: 9999,
       background: '#1e1e2e', color: '#cdd6f4',
       border: '1px solid #313244', borderRadius: 6,
-      padding: '4px 8px', fontSize: 10, fontFamily: 'monospace',
+      padding: '2px 8px', fontSize: 10, fontFamily: 'monospace',
       display: 'flex', alignItems: 'center', gap: 6,
       boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
-      opacity: 0.85,
+      opacity: 0.9,
     }}>
       <span title="Backend server (auto-detected; lower-latency region wins)">
         {REGIONS[currentRegion].label}

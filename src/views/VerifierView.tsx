@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { onValue, ref } from 'firebase/database';
+import { DiffEditor } from '@monaco-editor/react';
 import { db } from '../firebase';
 import { ChatPanel } from '../components/ChatPanel';
 import { MarkdownViewer } from '../components/MarkdownViewer';
@@ -10,9 +11,9 @@ import { Resizer } from '../components/Resizer';
 import { Onboarding, VERIFIER_STEPS } from '../components/Onboarding';
 import { SessionState, Role, FileEntry } from '../types';
 
-// Subscribes to `teambench/sessions/{sid}/agentModelUsage` and returns a
-// per-role summary for the "AI Activity" panel in hybrid mode. Undefined
-// in team/solo modes so non-hybrid rendering stays cheap.
+// Subscribes to per-turn agent usage records — role + token counts. The
+// gateway/model identifier is intentionally NOT exposed to the Verifier
+// (studies require participants to be blind to which LLM wrote the code).
 interface AgentUsage {
   role: 'planner' | 'executor';
   gateway: string;
@@ -31,6 +32,48 @@ function useAgentActivity(sessionId: string, enabled: boolean) {
     });
   }, [sessionId, enabled]);
   return entries;
+}
+
+// Initial (pre-execution) workspace snapshot for the diff viewer.
+interface InitialFile { path: string; content: string }
+function useInitialWorkspace(sessionId: string, enabled: boolean) {
+  const [files, setFiles] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!enabled || !sessionId) return;
+    return onValue(ref(db, `teambench/sessions/${sessionId}/initialWorkspace`), snap => {
+      if (!snap.exists()) { setFiles({}); return; }
+      const out: Record<string, string> = {};
+      const data = snap.val() as Record<string, InitialFile>;
+      for (const v of Object.values(data)) {
+        if (v?.path != null) out[v.path] = v.content ?? '';
+      }
+      setFiles(out);
+    });
+  }, [sessionId, enabled]);
+  return files;
+}
+
+// Grader output (auto-run by executor after ### DONE). Undefined until
+// the grader has run at least once.
+interface LastGrade {
+  ok?: boolean;
+  verdict?: string;
+  score?: number | null;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+  status?: number;
+  timestamp?: number;
+}
+function useLastGrade(sessionId: string, enabled: boolean): LastGrade | null {
+  const [grade, setGrade] = useState<LastGrade | null>(null);
+  useEffect(() => {
+    if (!enabled || !sessionId) return;
+    return onValue(ref(db, `teambench/sessions/${sessionId}/lastGrade`), snap => {
+      setGrade(snap.exists() ? (snap.val() as LastGrade) : null);
+    });
+  }, [sessionId, enabled]);
+  return grade;
 }
 
 interface VerifierViewProps {
@@ -58,7 +101,17 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
 
   const currentFile = files.find(f => f.path === selectedFile);
   const canVerify = session.phase === 'verification';
-  const agentActivity = useAgentActivity(session.sessionId, session.mode === 'hybrid');
+  const isHybrid = session.mode === 'hybrid';
+  const agentActivity = useAgentActivity(session.sessionId, isHybrid);
+  const initialFiles = useInitialWorkspace(session.sessionId, isHybrid);
+  const lastGrade = useLastGrade(session.sessionId, isHybrid);
+  // Default to diff view in hybrid mode once there's a baseline to compare.
+  const [showDiff, setShowDiff] = useState(false);
+  useEffect(() => {
+    if (isHybrid && Object.keys(initialFiles).length > 0) setShowDiff(true);
+  }, [isHybrid, initialFiles]);
+  const fileIsChanged = !!(currentFile && initialFiles[currentFile.path] != null
+                           && initialFiles[currentFile.path] !== currentFile.content);
 
   // Spotlights for the Verifier: (1) the Workspace tab (they start on Spec),
   // (2) the verdict buttons once they've inspected the work, (3) the submit
@@ -159,12 +212,55 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                   <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
                 </div>
                 <Resizer direction="horizontal" onResize={handleResize} />
-                <div style={{ flex: 1 }}>
-                  {currentFile ? (
-                    <CodeEditor path={currentFile.path} content={currentFile.content} language={currentFile.language} readOnly />
-                  ) : (
-                    <div style={{ padding: 24, color: '#888' }}>Select a file to view</div>
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                  {isHybrid && currentFile && (
+                    <div style={{
+                      padding: '4px 10px', background: '#181825', borderBottom: '1px solid #313244',
+                      fontSize: 11, display: 'flex', alignItems: 'center', gap: 10, color: '#a6adc8',
+                    }}>
+                      <span>{currentFile.path}</span>
+                      {fileIsChanged ? (
+                        <span style={{ color: '#fbbf24', fontWeight: 600 }}>● modified by AI</span>
+                      ) : initialFiles[currentFile.path] != null ? (
+                        <span style={{ color: '#6c7086' }}>unchanged</span>
+                      ) : (
+                        <span style={{ color: '#f38ba8' }}>+ new file</span>
+                      )}
+                      <label style={{ marginLeft: 'auto', cursor: 'pointer', fontSize: 11 }}>
+                        <input
+                          type="checkbox"
+                          checked={showDiff}
+                          onChange={e => setShowDiff(e.target.checked)}
+                          style={{ marginRight: 4, verticalAlign: 'middle' }}
+                        />
+                        Show diff
+                      </label>
+                    </div>
                   )}
+                  <div style={{ flex: 1 }}>
+                    {currentFile ? (
+                      isHybrid && showDiff ? (
+                        <DiffEditor
+                          original={initialFiles[currentFile.path] ?? ''}
+                          modified={currentFile.content}
+                          language={currentFile.language}
+                          theme="vs-dark"
+                          options={{
+                            readOnly: true,
+                            renderSideBySide: false,
+                            minimap: { enabled: false },
+                            fontSize: 13,
+                            lineNumbers: 'on',
+                            scrollBeyondLastLine: false,
+                          }}
+                        />
+                      ) : (
+                        <CodeEditor path={currentFile.path} content={currentFile.content} language={currentFile.language} readOnly />
+                      )
+                    ) : (
+                      <div style={{ padding: 24, color: '#888' }}>Select a file to view</div>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
@@ -193,7 +289,6 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                     <thead>
                       <tr style={{ color: '#6c7086', textAlign: 'left' }}>
                         <th style={{ padding: '2px 6px' }}>Role</th>
-                        <th style={{ padding: '2px 6px' }}>Gateway</th>
                         <th style={{ padding: '2px 6px', textAlign: 'right' }}>In→Out tokens</th>
                         <th style={{ padding: '2px 6px' }}>Time</th>
                       </tr>
@@ -204,7 +299,6 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                           <td style={{ padding: '2px 6px', color: e.role === 'planner' ? '#a5b4fc' : '#fbbf24' }}>
                             {e.role}
                           </td>
-                          <td style={{ padding: '2px 6px', color: '#a6adc8' }}>{e.gateway}</td>
                           <td style={{ padding: '2px 6px', textAlign: 'right', color: '#cdd6f4' }}>
                             {e.usage?.prompt_tokens ?? 0}→{e.usage?.completion_tokens ?? 0}
                           </td>
@@ -249,14 +343,66 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
               marks done.
             </div>
           )}
+          {/* Test output panel — surfaces the auto-grader's stdout so the
+              Verifier can judge based on real test results, not vibes. */}
+          {isHybrid && lastGrade && (
+            <div style={{
+              padding: '10px 14px', background: '#181825',
+              borderTop: '1px solid #313244', fontSize: 11, color: '#cdd6f4',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                <strong style={{ color: '#cdd6f4' }}>Auto-grader output</strong>
+                {lastGrade.verdict && (
+                  <span style={{
+                    padding: '1px 8px', borderRadius: 3, fontWeight: 700, fontSize: 10,
+                    background: lastGrade.verdict === 'pass' ? '#10b98133' : '#f38ba833',
+                    color: lastGrade.verdict === 'pass' ? '#10b981' : '#f38ba8',
+                  }}>
+                    {lastGrade.verdict.toUpperCase()}
+                  </span>
+                )}
+                {lastGrade.score != null && (
+                  <span style={{ color: '#a6adc8', fontSize: 10 }}>
+                    score: {typeof lastGrade.score === 'number' ? lastGrade.score.toFixed(2) : String(lastGrade.score)}
+                  </span>
+                )}
+                {!lastGrade.ok && (
+                  <span style={{ color: '#f38ba8', fontSize: 10 }}>
+                    grader error{lastGrade.error ? `: ${lastGrade.error}` : ''}
+                  </span>
+                )}
+              </div>
+              <details>
+                <summary style={{ cursor: 'pointer', color: '#89b4fa', fontSize: 11 }}>
+                  stdout / stderr ({((lastGrade.stdout?.length || 0) + (lastGrade.stderr?.length || 0))} chars)
+                </summary>
+                <pre style={{
+                  margin: '6px 0 0', padding: 8, background: '#11111b', borderRadius: 4,
+                  fontSize: 10, fontFamily: 'ui-monospace, monospace',
+                  maxHeight: 180, overflow: 'auto', whiteSpace: 'pre-wrap',
+                  color: '#cdd6f4',
+                }}>
+                  {lastGrade.stdout || ''}
+                  {lastGrade.stderr ? `\n--- stderr ---\n${lastGrade.stderr}` : ''}
+                </pre>
+              </details>
+            </div>
+          )}
           {/* Verdict panel */}
           {canVerify && (
             <div style={{
               padding: 16, background: '#1e1e2e', borderTop: '1px solid #333',
             }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4', marginBottom: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4', marginBottom: 4 }}>
                 Submit Verification Verdict
               </div>
+              <p style={{ fontSize: 11, color: '#6c7086', margin: '0 0 10px', lineHeight: 1.5 }}>
+                Use <strong style={{ color: '#a6adc8' }}>Show diff</strong> above to see what the AI changed,
+                and the <strong style={{ color: '#a6adc8' }}>Auto-grader output</strong> for test results.
+                Pick <span style={{ color: '#10b981', fontWeight: 600 }}>PASS</span> if the fix is correct
+                and complete, <span style={{ color: '#f38ba8', fontWeight: 600 }}>FAIL</span> if something is
+                missing or wrong. On FAIL, your notes are sent back to the AI Executor for one more attempt.
+              </p>
               <div
                 className={needsVerdictAttention ? 'tb-spotlight' : undefined}
                 style={{

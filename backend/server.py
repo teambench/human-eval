@@ -408,6 +408,52 @@ def _hybrid_rate_allow(task_id: str, client_ip: str) -> bool:
         return True
 
 
+def _snapshot_initial_workspace(session_id: str, ws_path: str) -> None:
+    """Mirror the staged workspace to Firebase BEFORE agents start editing.
+
+    The Verifier diffs current-vs-initial to see exactly what the Executor
+    changed. Without this snapshot the diff would always show "everything
+    was just written" because Firebase's /files also updates as the
+    executor edits. We use a parallel path sessions/{sid}/initialWorkspace
+    and only write it once.
+    """
+    import httpx as _httpx  # already in deps
+
+    fb_root = os.environ.get("FIREBASE_DB_URL",
+                             "https://ivory-plane-406700-default-rtdb.firebaseio.com")
+    # Check if already captured (idempotent — don't wipe on repeat /start-hybrid).
+    try:
+        r = _httpx.get(f"{fb_root}/teambench/sessions/{session_id}/initialWorkspace.json",
+                       timeout=5.0)
+        if r.status_code == 200 and r.text and r.text != "null":
+            return
+    except Exception:
+        pass
+
+    entries: dict[str, dict] = {}
+    SKIP = {"__pycache__", ".pytest_cache", ".git", "node_modules", ".venv"}
+    for root_dir, dirs, fnames in os.walk(ws_path):
+        dirs[:] = [d for d in dirs if d not in SKIP]
+        for fn in fnames:
+            full = os.path.join(root_dir, fn)
+            rel = os.path.relpath(full, ws_path)
+            try:
+                if os.path.getsize(full) > 200_000:
+                    continue
+                with open(full, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+            except Exception:
+                continue
+            # Same key-escape scheme as the existing /files path.
+            key = "".join("_" if ch in "./[]#$" else ch for ch in rel)
+            entries[key] = {"path": rel, "content": content}
+    try:
+        _httpx.put(f"{fb_root}/teambench/sessions/{session_id}/initialWorkspace.json",
+                   json=entries, timeout=10.0)
+    except Exception as e:
+        print(f"[initialWorkspace] snapshot failed for {session_id}: {e}")
+
+
 def _start_hybrid_agents(session_id: str, task_id: str) -> None:
     """Spawn planner + executor agent_runner subprocesses.
 
@@ -419,6 +465,10 @@ def _start_hybrid_agents(session_id: str, task_id: str) -> None:
     if not session:
         raise HTTPException(404, "Session not found — call /create first")
     ws_path = session.get("ws_path") or os.path.join(session["workspace_dir"], "workspace")
+
+    # Snapshot the baseline BEFORE spawning agents. Must be sync so agents
+    # don't race us.
+    _snapshot_initial_workspace(session_id, ws_path)
 
     with _hybrid_lock:
         if session_id in hybrid_agents:

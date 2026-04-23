@@ -371,13 +371,12 @@ def _run_execution_turns(
                 fb.write_file_echo(session_id, rel, content)
                 applied.append(rel)
 
-        turn_tag = f"[turn {turn_idx + 1}/{MAX_TURNS_PER_PHASE}]"
         summary = (explanation or "").strip() or "(no explanation)"
         if applied:
             summary += f"\n\nEdited: {', '.join(applied)}"
         if done:
-            summary += "\n\n✓ Executor marked DONE."
-        chat(session_id, "executor", f"{turn_tag} {summary}")
+            summary += "\n\n✓ Marked DONE."
+        chat(session_id, "executor", summary)
         log.info("executor turn %d: %d edits via %s (done=%s)",
                  turn_idx + 1, len(applied), resp.gateway_id, done)
 
@@ -392,6 +391,46 @@ def _run_execution_turns(
             return
 
         time.sleep(1.0)  # Let the human see each turn's output
+
+
+def _auto_grade(session_id: str) -> None:
+    """Invoke the backend grader after DONE and mirror the result to Firebase.
+
+    The Verifier sees the grader's stdout/score BEFORE submitting their
+    verdict — otherwise they'd be grading based on gut feel. We call the
+    backend's own /grade endpoint (runs grade.sh inside the container) via
+    httpx and write the trimmed output to sessions/{sid}/lastGrade.
+    """
+    import httpx
+    import os as _os
+
+    try:
+        backend_host = _os.environ.get("HYBRID_BACKEND_URL", "http://localhost:8444")
+        with httpx.Client(timeout=60.0) as c:
+            r = c.post(f"{backend_host}/api/session/{session_id}/grade")
+            if r.status_code != 200:
+                fb.set(fb.session_path(session_id, "lastGrade"), {
+                    "ok": False,
+                    "status": r.status_code,
+                    "stdout": r.text[:4000],
+                    "timestamp": int(time.time() * 1000),
+                })
+                return
+            body = r.json()
+            fb.set(fb.session_path(session_id, "lastGrade"), {
+                "ok": True,
+                "verdict": body.get("verdict", ""),
+                "score": body.get("score", None),
+                "stdout": (body.get("stdout", "") or "")[:6000],
+                "stderr": (body.get("stderr", "") or "")[:4000],
+                "timestamp": int(time.time() * 1000),
+            })
+    except Exception as e:
+        fb.set(fb.session_path(session_id, "lastGrade"), {
+            "ok": False,
+            "error": type(e).__name__,
+            "timestamp": int(time.time() * 1000),
+        })
 
 
 def run_executor(session_id: str, task_id: str, ws_path: str) -> None:
@@ -427,6 +466,12 @@ def run_executor(session_id: str, task_id: str, ws_path: str) -> None:
         # Execute multiple turns until DONE or turn cap.
         _run_execution_turns(session_id, task_id, ws_path, remediation_note, start_ts)
         remediation_note = None  # consumed
+
+        # Auto-run the grader so the Verifier sees test output before deciding.
+        # The grader invokes the container's grade.sh which runs pytest +
+        # any task-specific checks and returns stdout/stderr/verdict/score.
+        log.info("executor: invoking auto-grade before verification")
+        _auto_grade(session_id)
 
         # Advance to verification.
         time.sleep(1.0)
