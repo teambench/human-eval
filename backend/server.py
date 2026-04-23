@@ -15,14 +15,35 @@ import json
 import os
 import re
 import shutil
+import signal
+import subprocess
 import sys
 import tempfile
+import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
+# Load API keys + Firebase URL from the canonical TeamBench .env BEFORE any
+# module that reads them. Keys stay in process env only; never logged, never
+# returned from any endpoint. The file path is configurable via TEAMBENCH_ENV_FILE.
+try:
+    from dotenv import load_dotenv
+
+    for _envp in (
+        os.environ.get("TEAMBENCH_ENV_FILE"),
+        "/u/ybkim95/TeamBench/.env",
+        str(Path(__file__).parent / ".env"),
+    ):
+        if _envp and os.path.isfile(_envp):
+            load_dotenv(_envp, override=False)
+            break
+except ImportError:
+    pass
+
 import docker
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="TeamBench Human Eval Backend")
@@ -329,6 +350,10 @@ def get_session(session_id: str) -> Optional[dict]:
 
 def cleanup_session(session_id: str):
     """Stop and remove a session's container."""
+    # Always stop any hybrid agents first so they don't burn tokens
+    # writing to a session we're about to tear down.
+    _stop_hybrid_agents(session_id)
+
     session = sessions.pop(session_id, None)
     if not session:
         return
@@ -344,6 +369,116 @@ def cleanup_session(session_id: str):
     workspace_dir = session.get("workspace_dir")
     if workspace_dir and os.path.exists(workspace_dir):
         shutil.rmtree(workspace_dir, ignore_errors=True)
+
+
+# ── Hybrid mode: LLM-powered Planner + Executor, human Verifier ─────────
+#
+# Safety rails (all enforced before an LLM call is ever made):
+#   * HYBRID_DISABLED=1 env var refuses new sessions entirely.
+#   * Rate limit: MAX 1 hybrid session per (task_id, client_ip) per hour.
+#   * Global cap: MAX HYBRID_MAX_SESSIONS concurrent hybrid sessions.
+#   * Dead-man: agent_runner exits after HYBRID_DEAD_MAN_S of no human
+#     activity (enforced inside the subprocess).
+#   * Wall-clock: HYBRID_WALL_CLOCK_S per agent (subprocess-enforced).
+
+HYBRID_MAX_SESSIONS = int(os.environ.get("HYBRID_MAX_SESSIONS", "5"))
+HYBRID_RATE_WINDOW_S = int(os.environ.get("HYBRID_RATE_WINDOW_S", "3600"))
+
+# sid -> list of subprocess.Popen (one per agent role)
+hybrid_agents: dict[str, list[subprocess.Popen]] = {}
+# (task_id, client_ip) -> deque[timestamp] within rate window
+hybrid_rate_state: dict[tuple[str, str], deque] = {}
+_hybrid_lock = threading.Lock()
+
+
+def _hybrid_rate_allow(task_id: str, client_ip: str) -> bool:
+    """Per-IP-per-task rate limit. Drops records outside the window."""
+    if not client_ip:
+        client_ip = "unknown"
+    key = (task_id, client_ip)
+    now = time.time()
+    cutoff = now - HYBRID_RATE_WINDOW_S
+    with _hybrid_lock:
+        q = hybrid_rate_state.setdefault(key, deque())
+        while q and q[0] < cutoff:
+            q.popleft()
+        if len(q) >= 1:  # 1 session per task per IP per window
+            return False
+        q.append(now)
+        return True
+
+
+def _start_hybrid_agents(session_id: str, task_id: str) -> None:
+    """Spawn planner + executor agent_runner subprocesses.
+
+    Keys are inherited via os.environ (already loaded from .env at startup).
+    We pass env explicitly so the subprocess sees exactly what the parent
+    has — no extra leakage, no missing state.
+    """
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found — call /create first")
+    ws_path = session.get("ws_path") or os.path.join(session["workspace_dir"], "workspace")
+
+    with _hybrid_lock:
+        if session_id in hybrid_agents:
+            return  # idempotent
+
+    runner = os.path.join(os.path.dirname(__file__), "agent_runner.py")
+    python_bin = os.environ.get("HYBRID_PYTHON", sys.executable)
+
+    # Start both agents. Stdout/stderr go to a per-session log file so we
+    # can debug without logs polluting the uvicorn stream.
+    log_dir = os.environ.get("HYBRID_LOG_DIR", "/tmp/teambench_hybrid_logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    procs: list[subprocess.Popen] = []
+    for role in ("planner", "executor"):
+        log_path = os.path.join(log_dir, f"{session_id}_{role}.log")
+        lf = open(log_path, "a", buffering=1)
+        p = subprocess.Popen(
+            [
+                python_bin, runner,
+                "--session-id", session_id,
+                "--role", role,
+                "--task-id", task_id,
+                "--workspace-path", ws_path,
+            ],
+            env=os.environ.copy(),
+            stdout=lf,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,  # so SIGTERM doesn't cascade unexpectedly
+        )
+        procs.append(p)
+
+    with _hybrid_lock:
+        hybrid_agents[session_id] = procs
+
+
+def _stop_hybrid_agents(session_id: str) -> None:
+    """Terminate agent subprocesses for a session. Idempotent."""
+    with _hybrid_lock:
+        procs = hybrid_agents.pop(session_id, [])
+    for p in procs:
+        try:
+            if p.poll() is None:
+                p.terminate()
+        except Exception:
+            pass
+    # Brief grace period, then SIGKILL stragglers.
+    deadline = time.time() + 3.0
+    for p in procs:
+        try:
+            remaining = max(0.1, deadline - time.time())
+            p.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            try:
+                p.kill()
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
 from pydantic import BaseModel
@@ -759,6 +894,50 @@ async def grade_session(session_id: str):
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/session/{session_id}/start-hybrid")
+async def start_hybrid(session_id: str, request: Request, task_id: str = "DEMO_api_fix"):
+    """Spawn LLM planner + executor for a hybrid session.
+
+    Rate limit: 1 session per (task_id, client_ip) per hour.
+    Global cap: HYBRID_MAX_SESSIONS concurrent.
+    Kill switch: HYBRID_DISABLED=1 refuses the call.
+    """
+    if os.environ.get("HYBRID_DISABLED") == "1":
+        raise HTTPException(503, "Hybrid mode is disabled")
+
+    with _hybrid_lock:
+        if len(hybrid_agents) >= HYBRID_MAX_SESSIONS:
+            raise HTTPException(503, "Too many active hybrid sessions")
+
+    client_ip = (request.headers.get("x-forwarded-for", "") or request.client.host or "").split(",")[0].strip()
+    if not _hybrid_rate_allow(task_id, client_ip):
+        raise HTTPException(429, "Rate limit: try again later or pick a different task")
+
+    # Must have a session + workspace already provisioned.
+    if session_id not in sessions:
+        raise HTTPException(404, "Session not found — call /create first")
+
+    # At least one LLM gateway must be available, else we'd spawn processes
+    # that immediately fail. Import lazily so server boots even if deps missing.
+    try:
+        sys.path.insert(0, os.path.dirname(__file__))
+        from providers import model_pool  # type: ignore
+        if not model_pool.available_gateways():
+            raise HTTPException(503, "No LLM gateways configured on backend")
+    except ImportError as e:
+        raise HTTPException(503, f"Hybrid dependencies missing: {type(e).__name__}")
+
+    _start_hybrid_agents(session_id, task_id)
+    return {"status": "started", "session_id": session_id}
+
+
+@app.post("/api/session/{session_id}/stop-hybrid")
+async def stop_hybrid(session_id: str):
+    """Terminate hybrid agents for a session. Idempotent."""
+    _stop_hybrid_agents(session_id)
+    return {"status": "stopped"}
 
 
 @app.delete("/api/session/{session_id}")

@@ -123,6 +123,32 @@ async function createOracleSession(
   return sessionId;
 }
 
+// Hybrid: 1 human (verifier) + 2 AI agents (planner, executor). No waiting
+// room — the human joins alone and the backend spawns the agents immediately
+// via /api/session/{sid}/start-hybrid after the container is provisioned.
+async function createHybridSession(
+  taskId: string, name: string,
+  taskMeta: { category: string; difficulty: string },
+  profile?: UserProfile,
+): Promise<string> {
+  const sessionId = `${taskId}_hybrid_${generateId()}`;
+  const now = Date.now();
+
+  await set(ref(db, `teambench/sessions/${sessionId}`), {
+    sessionId, taskId, mode: 'hybrid',
+    taskCategory: taskMeta.category, taskDifficulty: taskMeta.difficulty,
+    experimentRound: EXPERIMENT_ROUND, experimentGroup: groupForEmail(profile?.email),
+    phase: 'planning', status: 'active',
+    startTime: now, startTimeISO: new Date(now).toISOString(),
+    endTime: null, createdAt: now, createdAtISO: new Date(now).toISOString(),
+    durationSeconds: null, phaseDurations: {},
+    participants: { verifier: participantInfo(name, profile) },
+    verdict: null, remediationCount: 0,
+  });
+
+  return sessionId;
+}
+
 // ── Main Hook ──
 export function useFirebaseSession() {
   const [task, setTask] = useState<TaskConfig | null>(null);
@@ -383,6 +409,9 @@ export function useFirebaseSession() {
       if (selectedMode === 'oracle') {
         newSessionId = await createOracleSession(selectedTask.taskId, name, taskMeta, profile);
         isNew = true;
+      } else if (selectedMode === 'hybrid') {
+        newSessionId = await createHybridSession(selectedTask.taskId, name, taskMeta, profile);
+        isNew = true;
       } else {
         const result = await findOrCreateTeam(selectedTask.taskId, selectedRole, name, taskMeta, profile);
         newSessionId = result.sessionId;
@@ -400,6 +429,28 @@ export function useFirebaseSession() {
           filesData[key] = { content: f.content, language: f.language };
         }
         await set(ref(db, `teambench/sessions/${newSessionId}/files`), filesData);
+      }
+
+      // For hybrid, kick off the backend agent runners. We don't await the
+      // full agent work — /start-hybrid returns as soon as processes spawn.
+      // The container-ensure effect (fetchFiles useEffect) handles /create;
+      // we then POST /start-hybrid once the session is known-good.
+      if (selectedMode === 'hybrid') {
+        try {
+          const backend = `https://${import.meta.env.VITE_BACKEND_HOST || getHostSync()}`;
+          // First ensure container exists (agents need the workspace).
+          await fetch(`${backend}/api/session/${newSessionId}/create?task_id=${encodeURIComponent(selectedTask.taskId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: {} }),
+          });
+          // Then spawn the agents.
+          await fetch(`${backend}/api/session/${newSessionId}/start-hybrid?task_id=${encodeURIComponent(selectedTask.taskId)}`, {
+            method: 'POST',
+          });
+        } catch (e) {
+          console.error('Hybrid start failed:', e);
+        }
       }
 
       if (isNew && selectedMode === 'team') setWaitingForTeam(true);
@@ -580,8 +631,19 @@ export function useFirebaseSession() {
       // Snapshot terminal-authored files before we blow the container away.
       // Even for a "Back" click mid-task we want to keep the partial work.
       await persistFinalWorkspace(sid);
-      // Team mode: signal cancellation so the partner sees it.
-      if (m === 'team') {
+      // Hybrid: tell the backend to kill the AI agent subprocesses NOW so
+      // they don't burn tokens writing to a dead session. Fire first, then
+      // the DELETE /api/session/{sid} below will also stop them as backup.
+      if (m === 'hybrid') {
+        try {
+          await fetch(`${BACKEND_API()}/api/session/${sid}/stop-hybrid`, {
+            method: 'POST', keepalive: true,
+          });
+        } catch { /* best-effort */ }
+      }
+      // Team / Hybrid mode: signal cancellation so the partner (or remaining
+      // agents) sees it.
+      if (m === 'team' || m === 'hybrid') {
         try {
           await update(ref(db, `teambench/sessions/${sid}`), {
             phase: 'cancelled', status: 'cancelled', endTime: Date.now(),

@@ -1,7 +1,7 @@
 export type Role = 'planner' | 'executor' | 'verifier' | 'oracle';
 
-// Team mode needs 3 people; oracle mode is solo
-export type SessionMode = 'team' | 'oracle';
+// Team mode needs 3 people; oracle mode is solo; hybrid = human verifier + 2 AI agents.
+export type SessionMode = 'team' | 'oracle' | 'hybrid';
 
 export interface Participant {
   id: string;

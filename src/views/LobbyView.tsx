@@ -373,6 +373,14 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                   subtitle="1 player"
                   desc="Full access to everything. Spec, code, terminal, and verification."
                 />
+                <ModeCard
+                  selected={mode === 'hybrid'}
+                  onClick={() => { setMode('hybrid'); setSelectedRole('verifier'); }}
+                  color="#10b981"
+                  title="Hybrid Mode"
+                  subtitle="You + 2 AI"
+                  desc="You are the Verifier. AI Planner + AI Executor write code; you grade it."
+                />
               </div>
 
               {/* Role selection for team mode */}
@@ -428,6 +436,7 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                     flex: 1, padding: '12px',
                     background: !selectedRole || joining ? '#333'
                       : mode === 'oracle' ? '#cba6f7'
+                      : mode === 'hybrid' ? '#10b981'
                       : TEAM_ROLES.find(r => r.role === selectedRole)?.color || '#89b4fa',
                     color: selectedRole === 'planner' || mode === 'oracle' ? '#fff' : '#000',
                     border: 'none', borderRadius: 8, fontWeight: 700, fontSize: 15,
@@ -436,6 +445,7 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                 >
                   {joining ? 'Joining...'
                     : mode === 'oracle' ? 'Start Mission'
+                    : mode === 'hybrid' ? 'Start Hybrid Mission'
                     : selectedRole ? `Join as ${TEAM_ROLES.find(r => r.role === selectedRole)?.label}` : 'Select a role'}
                 </button>
               </div>
