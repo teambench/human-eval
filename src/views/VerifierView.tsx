@@ -79,6 +79,22 @@ function useLastGrade(sessionId: string, enabled: boolean): LastGrade | null {
   return grade;
 }
 
+// Per-agent "thinking" flag — set to 'thinking' by agent_runner while it's
+// waiting on an LLM call, back to 'idle' otherwise. Renders the "AI is
+// thinking..." indicator so the Verifier knows why the chat just went quiet.
+type AgentState = 'thinking' | 'idle';
+interface AgentStatusMap { planner?: { state?: AgentState }; executor?: { state?: AgentState } }
+function useAgentStatus(sessionId: string, enabled: boolean): AgentStatusMap {
+  const [status, setStatus] = useState<AgentStatusMap>({});
+  useEffect(() => {
+    if (!enabled || !sessionId) return;
+    return onValue(ref(db, `teambench/sessions/${sessionId}/agentStatus`), snap => {
+      setStatus(snap.exists() ? (snap.val() as AgentStatusMap) : {});
+    });
+  }, [sessionId, enabled]);
+  return status;
+}
+
 interface VerifierViewProps {
   session: SessionState;
   files: FileEntry[];
@@ -96,9 +112,15 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
   const [notes, setNotes] = useState('');
   const [viewedWorkspace, setViewedWorkspace] = useState(false);
   const [fileTreeWidth, setFileTreeWidth] = useState(260);
+  const [chatWidth, setChatWidth] = useState(340);
   // Top-level so hook-call order is constant — same bug as PlannerView.
   const handleResize = useCallback(
     (d: number) => setFileTreeWidth(w => Math.max(140, Math.min(500, w + d))),
+    [],
+  );
+  const handleChatResize = useCallback(
+    // Drag is applied inside-out: dragging the resizer left widens the chat.
+    (d: number) => setChatWidth(w => Math.max(260, Math.min(700, w - d))),
     [],
   );
 
@@ -106,6 +128,7 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
   const canVerify = session.phase === 'verification';
   const isHybrid = session.mode === 'hybrid';
   const agentActivity = useAgentActivity(session.sessionId, isHybrid);
+  const agentStatus = useAgentStatus(session.sessionId, isHybrid);
   // Initial workspace subscription: enabled for ALL team-style modes (team
   // + hybrid) so the Verifier can see a +/- diff against the pre-execution
   // baseline. Populated by useFirebaseSession's fetchOnce on first staging
@@ -520,11 +543,25 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                 Submit Verification Verdict
               </div>
               <p style={{ fontSize: 11, color: '#6c7086', margin: '0 0 10px', lineHeight: 1.5 }}>
-                Use <strong style={{ color: '#a6adc8' }}>Show diff</strong> above to see what the AI changed,
-                and the <strong style={{ color: '#a6adc8' }}>Auto-grader output</strong> for test results.
-                Pick <span style={{ color: '#10b981', fontWeight: 600 }}>PASS</span> if the fix is correct
-                and complete, <span style={{ color: '#f38ba8', fontWeight: 600 }}>FAIL</span> if something is
-                missing or wrong. On FAIL, your notes are sent back to the AI Executor for one more attempt.
+                {isHybrid ? (
+                  <>
+                    <strong style={{ color: '#a6adc8' }}>Your role:</strong> don't just rubber-stamp the auto-grader.
+                    Your job is to catch what the tests CAN'T: brittle fixes, wrong-but-passing solutions,
+                    security regressions, code that happens to satisfy the existing tests but doesn't
+                    actually solve the problem in the spec. Check the <strong style={{ color: '#a6adc8' }}>diff</strong>{' '}
+                    and the <strong style={{ color: '#a6adc8' }}>grader output</strong>, then decide: PASS if the
+                    fix is genuinely correct; FAIL if it isn't (even if tests pass). On FAIL your notes go
+                    back to the AI Executor for one more attempt.
+                  </>
+                ) : (
+                  <>
+                    Use <strong style={{ color: '#a6adc8' }}>Show diff</strong> above to see what changed,
+                    and the <strong style={{ color: '#a6adc8' }}>Auto-grader output</strong> for test results.
+                    Pick <span style={{ color: '#10b981', fontWeight: 600 }}>PASS</span> if the fix is correct
+                    and complete, <span style={{ color: '#f38ba8', fontWeight: 600 }}>FAIL</span> if something
+                    is missing or wrong. On FAIL, your notes are sent back to the Executor for one more attempt.
+                  </>
+                )}
               </p>
               <div
                 className={needsVerdictAttention ? 'tb-spotlight' : undefined}
@@ -583,23 +620,48 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
           )}
         </div>
 
-        {/* Right: Chat */}
-        <div style={{ width: 340, borderLeft: '1px solid #333' }}>
-          <ChatPanel
-            role="verifier"
-            messages={messages}
-            onSend={onSendMessage}
-            disabled={session.phase === 'lobby' || session.phase === 'completed'}
-            systemNote={
-              session.phase === 'planning'
-                ? '💡 You are the Verifier. Read the Specification while the Planner writes the plan. You can ask clarifying questions in chat.'
-                : session.phase === 'execution'
-                ? '💡 The Executor is implementing the plan. They need to click "Mark Done" to hand off to you. Watch the Workspace tab to follow their edits in real time.'
-                : session.phase === 'verification'
-                ? '💡 Your turn. The grader is running (or already ran). Review the diff on the left, check the grader output below, then click PASS or FAIL.'
-                : undefined
-            }
-          />
+        {/* Resizer + Chat — draggable width so the Verifier can widen chat
+            when the AI pastes a long reply. */}
+        <Resizer direction="horizontal" onResize={handleChatResize} />
+        <div style={{
+          width: chatWidth, minWidth: 260, maxWidth: 700,
+          borderLeft: '1px solid #333', display: 'flex', flexDirection: 'column',
+        }}>
+          {/* "AI is thinking…" indicators — shown at the top of chat so the
+              Verifier knows why the panel just went quiet. */}
+          {isHybrid && (agentStatus.planner?.state === 'thinking' || agentStatus.executor?.state === 'thinking') && (
+            <div style={{
+              padding: '6px 12px', background: 'rgba(147, 197, 253, 0.08)',
+              borderBottom: '1px solid rgba(147, 197, 253, 0.22)',
+              fontSize: 11, color: '#a6adc8', display: 'flex', gap: 10,
+            }}>
+              {agentStatus.planner?.state === 'thinking' && (
+                <span><span style={{ color: '#a5b4fc' }}>AI Planner</span> is thinking<span className="tb-dots">…</span></span>
+              )}
+              {agentStatus.executor?.state === 'thinking' && (
+                <span><span style={{ color: '#fbbf24' }}>AI Executor</span> is thinking<span className="tb-dots">…</span></span>
+              )}
+            </div>
+          )}
+          <div style={{ flex: 1, overflow: 'hidden' }}>
+            <ChatPanel
+              role="verifier"
+              messages={messages}
+              onSend={onSendMessage}
+              disabled={session.phase === 'lobby' || session.phase === 'completed'}
+              systemNote={
+                isHybrid && session.phase === 'verification'
+                  ? '💡 The auto-grader has run. Your job is to DECIDE whether to trust it — humans catch things tests miss (brittle fixes, security holes, wrong-but-passes-tests solutions). Review the diff on the left, then PASS or FAIL.'
+                  : session.phase === 'planning'
+                  ? '💡 You are the Verifier. Read the Specification while the Planner writes the plan. You can ask clarifying questions in chat.'
+                  : session.phase === 'execution'
+                  ? '💡 The Executor is implementing the plan. They need to click "Mark Done" to hand off to you. Watch the Workspace tab to follow their edits in real time.'
+                  : session.phase === 'verification'
+                  ? '💡 Your turn. The grader is running (or already ran). Review the diff on the left, check the grader output below, then click PASS or FAIL.'
+                  : undefined
+              }
+            />
+          </div>
         </div>
       </div>
     </div>

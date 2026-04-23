@@ -287,11 +287,18 @@ def run_planner(session_id: str, task_id: str, ws_path: str) -> None:
         {"role": "user", "content": f"Task specification:\n\n{source[:8000]}"},
     ]
     try:
+        fb.set(fb.session_path(session_id, "agentStatus", "planner"),
+               {"state": "thinking", "since": int(time.time() * 1000)})
         resp = model_pool.call_llm(messages, max_tokens=600)
     except RuntimeError as e:
         log.error("planner LLM failure: %s", e)
+        fb.set(fb.session_path(session_id, "agentStatus", "planner"),
+               {"state": "idle", "since": int(time.time() * 1000)})
         chat(session_id, "planner", "[Planner unavailable — LLM gateways exhausted. Please cancel and retry.]")
         return
+    finally:
+        fb.set(fb.session_path(session_id, "agentStatus", "planner"),
+               {"state": "idle", "since": int(time.time() * 1000)})
 
     plan_text = resp.content.strip() or "(Planner produced no output.)"
     chat(session_id, "planner", plan_text)
@@ -331,6 +338,100 @@ Rules:
     flow, not live chat."""
 
 
+def _check_and_reply(
+    session_id: str,
+    role: str,
+    spec: str,
+    brief: str,
+    state: dict,
+    max_replies: int = 10,
+) -> None:
+    """One iteration of chat-response. Safe to call from any polling loop.
+
+    `state` is mutated in place with keys {last_seen_ts, replies, last_activity}
+    so the caller can share a single logical chat session across multiple
+    loops (e.g. verdict-wait AND post-session). Returns silently if:
+      - no new verifier messages since last_seen_ts
+      - no addressed ones among the new ones
+      - reply cap reached
+    """
+    if state.get("replies", 0) >= max_replies:
+        return
+
+    msgs_raw = fb.get(fb.session_path(session_id, "messages")) or {}
+    msgs = sorted(list(msgs_raw.values()) if isinstance(msgs_raw, dict) else [],
+                  key=lambda m: m.get("timestamp", 0))
+
+    other_role = "executor" if role == "planner" else "planner"
+
+    def _addressed(m: dict) -> bool:
+        to = m.get("to", "")
+        if to == role:
+            return True
+        if to != "all":
+            return False
+        text = (m.get("content", "") or "").lower()
+        if other_role in text and role not in text:
+            return False
+        if role in text:
+            return True
+        return role == "executor"
+
+    last_seen_ts = state.get("last_seen_ts", 0)
+    verifier_msgs = [
+        m for m in msgs
+        if m.get("timestamp", 0) > last_seen_ts and m.get("from") == "verifier"
+    ]
+    if verifier_msgs:
+        state["last_seen_ts"] = max(m.get("timestamp", 0) for m in verifier_msgs)
+
+    new_qs = [m for m in verifier_msgs if _addressed(m)]
+    if not new_qs:
+        return
+
+    q = new_qs[-1]
+    state["last_activity"] = time.time()
+
+    context_parts: list[str] = []
+    if spec:
+        context_parts.append(f"Task specification:\n{spec[:3000]}")
+    if brief:
+        context_parts.append(f"Task brief:\n{brief[:1000]}")
+    recent = msgs[-10:]
+    if recent:
+        lines = []
+        for m in recent:
+            f = m.get("from", "?")
+            t = m.get("to", "all")
+            c = (m.get("content", "") or "")[:400]
+            lines.append(f"[{f}→{t}] {c}")
+        context_parts.append("Recent chat:\n" + "\n".join(lines))
+    context_parts.append(f"Verifier's question:\n{q.get('content', '')}")
+
+    messages = [
+        {"role": "system", "content": CHAT_LISTEN_SYSTEM},
+        {"role": "user", "content": "\n\n".join(context_parts)[:20000]},
+    ]
+    try:
+        # Flip the visible "AI is thinking..." indicator.
+        fb.set(fb.session_path(session_id, "agentStatus", role),
+               {"state": "thinking", "since": int(time.time() * 1000)})
+        resp = model_pool.call_llm(messages, max_tokens=400)
+    except RuntimeError as e:
+        log.error("%s: chat LLM failure: %s", role, e)
+        fb.set(fb.session_path(session_id, "agentStatus", role),
+               {"state": "idle", "since": int(time.time() * 1000)})
+        return
+    finally:
+        fb.set(fb.session_path(session_id, "agentStatus", role),
+               {"state": "idle", "since": int(time.time() * 1000)})
+
+    reply = (resp.content or "").strip() or "(I don't have a good answer for that.)"
+    chat(session_id, role, reply)
+    log_model_use(session_id, role, resp.gateway_id, resp.usage)
+    state["replies"] = state.get("replies", 0) + 1
+
+
 def _chat_listen(
     session_id: str,
     role: str,
@@ -338,19 +439,21 @@ def _chat_listen(
     brief: str,
     max_replies: int,
     wall_clock_limit: float,
+    state: dict | None = None,
 ) -> None:
     """Stay alive after the main role loop, answering verifier questions.
 
-    Polls `sessions/{sid}/messages` for new chat traffic addressed to this
-    role or to 'all'. Generates a short LLM response and posts back.
-    Exits on terminal phase, dead-man inactivity, or reply cap.
+    Delegates to `_check_and_reply` per iteration so the same logic can
+    also run inside the executor's verdict-wait loop without duplicating
+    code.
     """
     start_ts = time.time()
-    # Only respond to messages NEWER than now — don't retroactively reply
-    # to the verifier's first "hi" posted before we entered the listener.
-    last_seen_ts = int(time.time() * 1000)
-    replies = 0
-    last_activity = time.time()
+    if state is None:
+        state = {
+            "last_seen_ts": int(time.time() * 1000),
+            "replies": 0,
+            "last_activity": time.time(),
+        }
 
     log.info("%s: entering chat-listen (cap=%d replies)", role, max_replies)
 
@@ -358,10 +461,10 @@ def _chat_listen(
         if time.time() - start_ts > wall_clock_limit:
             log.info("%s: chat-listen wall clock", role)
             return
-        if time.time() - last_activity > DEAD_MAN_LIMIT:
+        if time.time() - state.get("last_activity", time.time()) > DEAD_MAN_LIMIT:
             log.info("%s: chat-listen dead-man", role)
             return
-        if replies >= max_replies:
+        if state.get("replies", 0) >= max_replies:
             log.info("%s: chat-listen reply cap", role)
             return
 
@@ -370,88 +473,8 @@ def _chat_listen(
             log.info("%s: chat-listen terminal phase=%s", role, phase)
             return
 
-        msgs_raw = fb.get(fb.session_path(session_id, "messages")) or {}
-        msgs = sorted(list(msgs_raw.values()) if isinstance(msgs_raw, dict) else [],
-                      key=lambda m: m.get("timestamp", 0))
-
-        # Decide who should respond to each verifier message:
-        #   - `to == role`           → always respond
-        #   - `to == 'all'`:
-        #       * if the other role's name is mentioned in text → do NOT respond
-        #         (let the addressed role handle it)
-        #       * if MY role's name is mentioned → respond
-        #       * else → only the EXECUTOR replies (prevents both agents from
-        #         piling on every "hey team" message; planner is one-shot
-        #         by design and should stay quiet for general Q&A)
-        other_role = "executor" if role == "planner" else "planner"
-
-        def _addressed(m: dict) -> bool:
-            to = m.get("to", "")
-            if to == role:
-                return True
-            if to != "all":
-                return False
-            text = (m.get("content", "") or "").lower()
-            if other_role in text and role not in text:
-                return False
-            if role in text:
-                return True
-            return role == "executor"
-
-        # Advance the watermark past every verifier message we've seen
-        # (whether or not we'll respond to it). Without this, a skipped
-        # message (e.g. one addressed to the other agent) sits forever in
-        # the poll window.
-        verifier_msgs = [
-            m for m in msgs
-            if m.get("timestamp", 0) > last_seen_ts and m.get("from") == "verifier"
-        ]
-        if verifier_msgs:
-            last_seen_ts = max(m.get("timestamp", 0) for m in verifier_msgs)
-
-        new_qs = [m for m in verifier_msgs if _addressed(m)]
-
-        if not new_qs:
-            time.sleep(POLL_INTERVAL)
-            continue
-
-        # Only reply to the most recent; older ones are implicitly
-        # answered by a fresh message.
-        q = new_qs[-1]
-        last_activity = time.time()
-
-        context_parts: list[str] = []
-        if spec:
-            context_parts.append(f"Task specification:\n{spec[:3000]}")
-        if brief:
-            context_parts.append(f"Task brief:\n{brief[:1000]}")
-        # Recent chat for continuity (last 10 messages).
-        recent = msgs[-10:]
-        if recent:
-            lines = []
-            for m in recent:
-                f = m.get("from", "?")
-                t = m.get("to", "all")
-                c = (m.get("content", "") or "")[:400]
-                lines.append(f"[{f}→{t}] {c}")
-            context_parts.append("Recent chat:\n" + "\n".join(lines))
-        context_parts.append(f"Verifier's question:\n{q.get('content', '')}")
-
-        messages = [
-            {"role": "system", "content": CHAT_LISTEN_SYSTEM},
-            {"role": "user", "content": "\n\n".join(context_parts)[:20000]},
-        ]
-        try:
-            resp = model_pool.call_llm(messages, max_tokens=400)
-        except RuntimeError as e:
-            log.error("%s: chat LLM failure: %s", role, e)
-            time.sleep(POLL_INTERVAL * 2)
-            continue
-
-        reply = (resp.content or "").strip() or "(I don't have a good answer for that.)"
-        chat(session_id, role, reply)
-        log_model_use(session_id, role, resp.gateway_id, resp.usage)
-        replies += 1
+        _check_and_reply(session_id, role, spec, brief, state, max_replies=max_replies)
+        time.sleep(POLL_INTERVAL)
 
 
 def _latest_msg_from(session_id: str, role: str) -> str:
@@ -516,11 +539,16 @@ def _run_execution_turns(
             {"role": "user", "content": "\n\n".join(prompt_parts)[:32000]},
         ]
         try:
+            fb.set(fb.session_path(session_id, "agentStatus", "executor"),
+                   {"state": "thinking", "since": int(time.time() * 1000)})
             resp = model_pool.call_llm(messages, max_tokens=3500)
         except RuntimeError as e:
             log.error("executor LLM failure: %s", e)
             chat(session_id, "executor", "[Executor unavailable — LLM gateways exhausted.]")
             return
+        finally:
+            fb.set(fb.session_path(session_id, "agentStatus", "executor"),
+                   {"state": "idle", "since": int(time.time() * 1000)})
 
         log_model_use(session_id, "executor", resp.gateway_id, resp.usage)
 
@@ -623,6 +651,14 @@ def run_executor(session_id: str, task_id: str, ws_path: str) -> None:
     remediation_note: str | None = None
     last_human_activity = time.time()
 
+    # Shared chat state — survives across the verdict-wait loop and the
+    # post-cycle _chat_listen so reply caps + watermarks carry over.
+    executor_chat_state: dict = {
+        "last_seen_ts": int(time.time() * 1000),
+        "replies": 0,
+        "last_activity": time.time(),
+    }
+
     # Wait for phase=execution (Planner advances first).
     planning_timeout = 120.0
     wait_start = time.time()
@@ -664,7 +700,13 @@ def run_executor(session_id: str, task_id: str, ws_path: str) -> None:
 
         # Wait for verdict — WITH dead-man (the old code didn't check here,
         # which is why zombie runners polled Firebase for 14+ min in the bug).
+        # Also responds to verifier chat questions via _check_and_reply each
+        # iteration — without this the executor was deaf to "are you sure?"
+        # questions during verification.
         verdict_wait_start = time.time()
+        # Snapshot once for chat context; cheaper than re-reading per poll.
+        wait_files = load_workspace(ws_path)
+        wait_brief, wait_spec = read_brief_and_spec(wait_files)
         while True:
             if time.time() - start_ts > WALL_CLOCK_LIMIT:
                 log.warning("executor: wall clock during verdict wait")
@@ -672,6 +714,11 @@ def run_executor(session_id: str, task_id: str, ws_path: str) -> None:
             if time.time() - last_human_activity > DEAD_MAN_LIMIT:
                 log.warning("executor: dead-man timeout during verdict wait")
                 return
+
+            # Respond to any verifier Q&A while we wait.
+            _check_and_reply(session_id, "executor", wait_spec, wait_brief, executor_chat_state)
+            if executor_chat_state.get("last_activity", 0) > last_human_activity:
+                last_human_activity = executor_chat_state["last_activity"]
 
             phase = get_phase(session_id)
             if phase in TERMINAL_PHASES:
@@ -690,7 +737,9 @@ def run_executor(session_id: str, task_id: str, ws_path: str) -> None:
 
     # After the last remediation, the session is usually in verification
     # waiting for a final verdict. Stay alive to answer verifier questions
-    # (e.g. "why did you change X?").
+    # (e.g. "why did you change X?"). Reuses the chat state already built
+    # up during the inner verdict-wait loops so the reply cap and watermark
+    # carry over.
     files = load_workspace(ws_path)
     brief, spec = read_brief_and_spec(files)
     _chat_listen(
@@ -700,6 +749,7 @@ def run_executor(session_id: str, task_id: str, ws_path: str) -> None:
         brief=brief,
         max_replies=10,
         wall_clock_limit=WALL_CLOCK_LIMIT,
+        state=executor_chat_state,
     )
 
 

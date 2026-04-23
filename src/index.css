@@ -189,3 +189,15 @@ body {
 .tb-chat-md pre code { background: transparent; padding: 0; }
 .tb-chat-md strong { color: #fab387; font-weight: 700; }
 .tb-chat-md a { color: #89b4fa; }
+
+/* Animated "…" for the "AI is thinking" indicator above chat. */
+@keyframes tb-dots-pulse {
+  0%, 20% { opacity: 0.2; }
+  50%     { opacity: 1; }
+  80%     { opacity: 0.2; }
+}
+.tb-dots {
+  display: inline-block;
+  animation: tb-dots-pulse 1.2s ease-in-out infinite;
+  margin-left: 1px;
+}
