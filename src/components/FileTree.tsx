@@ -60,7 +60,7 @@ export function FileTree({ files, selectedPath, onSelect, modifiedPaths }: FileT
             </span>
             {isModified && (
               <span
-                title="Modified by AI Executor"
+                title="Modified by the Executor"
                 style={{
                   width: 7, height: 7, borderRadius: '50%',
                   background: '#fbbf24', flexShrink: 0,

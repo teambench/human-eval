@@ -7,6 +7,7 @@ import { Terminal } from '../components/Terminal';
 import { Timer } from '../components/Timer';
 import { Resizer } from '../components/Resizer';
 import { Onboarding, EXECUTOR_STEPS } from '../components/Onboarding';
+import { useInitialWorkspace } from '../hooks/useInitialWorkspace';
 import { SessionState, Role, FileEntry } from '../types';
 
 interface ExecutorViewProps {
@@ -48,6 +49,18 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
 
   const currentFile = files.find(f => f.path === selectedFile);
   const canEdit = session.phase === 'execution';
+
+  // Mark in the file tree which files the Executor has already touched —
+  // gives them a running "progress indicator" of what they've edited
+  // without having to remember. Uses the same post-staging snapshot the
+  // Planner and Verifier subscribe to, so all three roles see a
+  // consistent "●" dot on modified paths.
+  const initialFiles = useInitialWorkspace(session.sessionId, true);
+  const modifiedPaths = new Set(
+    files
+      .filter(f => initialFiles[f.path] == null || initialFiles[f.path] !== f.content)
+      .map(f => f.path),
+  );
 
   const needsEditAttention = canEdit && !hasEdited;
   const needsTerminalAttention = canEdit && !hasRunCommand;
@@ -135,7 +148,7 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
             </div>
           )}
           <div style={{ flex: 1, minHeight: 0 }}>
-            <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
+            <FileTree files={files} selectedPath={selectedFile} modifiedPaths={modifiedPaths} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
           </div>
         </div>
 

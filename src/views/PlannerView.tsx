@@ -6,6 +6,7 @@ import { CodeEditor } from '../components/CodeEditor';
 import { Timer } from '../components/Timer';
 import { Resizer } from '../components/Resizer';
 import { Onboarding, PLANNER_STEPS } from '../components/Onboarding';
+import { useInitialWorkspace } from '../hooks/useInitialWorkspace';
 import { SessionState, Role, FileEntry } from '../types';
 
 interface PlannerViewProps {
@@ -35,6 +36,16 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
   );
 
   const currentFile = files.find(f => f.path === selectedFile);
+
+  // Subscribe to the pre-execution snapshot so we can mark which files
+  // the Executor has touched in the Files tab. Same source the Verifier
+  // uses — populated by useFirebaseSession's fetchOnce on first staging.
+  const initialFiles = useInitialWorkspace(session.sessionId, true);
+  const modifiedPaths = new Set(
+    files
+      .filter(f => initialFiles[f.path] == null || initialFiles[f.path] !== f.content)
+      .map(f => f.path),
+  );
 
   // Chat is the Planner's primary action — drawing attention there is
   // more intuitive than glowing the Hand Off button (the button glow
@@ -117,7 +128,7 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
             ) : (
               <div style={{ display: 'flex', height: '100%' }}>
                 <div style={{ width: fileTreeWidth, minWidth: 140, maxWidth: 500, overflow: 'hidden' }}>
-                  <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
+                  <FileTree files={files} selectedPath={selectedFile} modifiedPaths={modifiedPaths} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
                 </div>
                 <Resizer direction="horizontal" onResize={handleResize} />
                 <div style={{ flex: 1 }}>
