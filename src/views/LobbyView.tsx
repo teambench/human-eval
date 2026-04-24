@@ -3,7 +3,7 @@ import { ref, onValue } from 'firebase/database';
 import { db } from '../firebase';
 import { Role, SessionMode, TaskConfig } from '../types';
 import { TASK_CATALOG, TaskEntry, DEMO_TASK } from '../data/taskCatalog';
-import { subscribeToUserSolved, SolvedByModeMap, statusFor, ModeStatus, loadSolvedFromLocal } from '../lib/solvedTasks';
+import { subscribeToUserSolved, SolvedByModeMap, statusFor, ModeStatus, loadSolvedFromLocal, subscribeToTaskStats, TaskStats } from '../lib/solvedTasks';
 
 // ── Types ──
 export interface UserProfile {
@@ -96,6 +96,15 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
   const [mode, setMode] = useState<SessionMode | null>(null);
   const [selectedRole, setSelectedRole] = useState<Role | null>(null);
   const [waitingRoles, setWaitingRoles] = useState<Record<string, boolean>>({});
+  // Filters + live global task stats for the picker step. Difficulty is
+  // a pill group (4 fixed values); category is a dropdown (derived from
+  // TASK_CATALOG). Stats are keyed by taskId and refresh in real time as
+  // any participant completes a grading attempt anywhere.
+  type DiffFilter = 'all' | TaskEntry['difficulty'];
+  const [diffFilter, setDiffFilter] = useState<DiffFilter>('all');
+  const [catFilter, setCatFilter] = useState<string>('all');
+  const [taskStats, setTaskStats] = useState<Record<string, TaskStats>>({});
+  useEffect(() => subscribeToTaskStats(setTaskStats), []);
 
   // Subscribe to waiting queue for selected task
   useEffect(() => {
@@ -304,20 +313,96 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
           )}
 
           {/* ── Step 2: Task Selection ── */}
-          {step === 'task' && (
+          {step === 'task' && (() => {
+            // Category list derived from the catalog so adding a task
+            // never requires touching the filter UI. Difficulty order is
+            // fixed (easy first so participants see the gentle onramp).
+            const DIFF_ORDER: Record<TaskEntry['difficulty'], number> =
+              { easy: 0, medium: 1, hard: 2, expert: 3 };
+            const categories = Array.from(new Set(TASK_CATALOG.map(t => t.category))).sort();
+            const filteredTasks = TASK_CATALOG
+              .filter(t => diffFilter === 'all' || t.difficulty === diffFilter)
+              .filter(t => catFilter === 'all' || t.category === catFilter)
+              .slice()
+              .sort((a, b) =>
+                DIFF_ORDER[a.difficulty] - DIFF_ORDER[b.difficulty]
+                || a.category.localeCompare(b.category)
+                || a.displayName.localeCompare(b.displayName),
+              );
+            const DIFF_PILLS: Array<DiffFilter> = ['all', 'easy', 'medium', 'hard', 'expert'];
+            const DIFF_COLORS_BG: Record<TaskEntry['difficulty'], string> = {
+              easy: '#a6e3a1', medium: '#f9e2af', hard: '#fab387', expert: '#f38ba8',
+            };
+            return (
             <FadeIn>
-              <h2 style={{ color: '#cdd6f4', fontSize: 22, fontWeight: 700, margin: '0 0 20px', textAlign: 'center' }}>
+              <h2 style={{ color: '#cdd6f4', fontSize: 22, fontWeight: 700, margin: '0 0 12px', textAlign: 'center' }}>
                 Task
               </h2>
+
+              {/* Filter bar: difficulty pills + category dropdown */}
+              <div style={{
+                display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center',
+                padding: '8px 10px', background: '#181825', borderRadius: 8,
+                marginBottom: 10, fontSize: 12,
+              }}>
+                <span style={{ color: '#6c7086', fontSize: 11, fontWeight: 600, marginRight: 2 }}>
+                  Difficulty:
+                </span>
+                {DIFF_PILLS.map(d => {
+                  const active = diffFilter === d;
+                  const color = d === 'all' ? '#89b4fa' : DIFF_COLORS_BG[d];
+                  return (
+                    <button
+                      key={d}
+                      onClick={() => setDiffFilter(d)}
+                      style={{
+                        padding: '3px 10px', borderRadius: 4,
+                        border: `1px solid ${active ? color : '#313244'}`,
+                        background: active ? color : 'transparent',
+                        color: active ? '#000' : '#a6adc8',
+                        fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      {d}
+                    </button>
+                  );
+                })}
+                <span style={{ flex: 1 }} />
+                <span style={{ color: '#6c7086', fontSize: 11, fontWeight: 600 }}>Category:</span>
+                <select
+                  value={catFilter}
+                  onChange={e => setCatFilter(e.target.value)}
+                  style={{
+                    background: '#313244', color: '#cdd6f4',
+                    border: '1px solid #45475a', borderRadius: 4,
+                    padding: '3px 6px', fontSize: 12, maxWidth: 220,
+                  }}
+                >
+                  <option value="all">All categories</option>
+                  {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <span style={{ color: '#6c7086', fontSize: 11, marginLeft: 4 }}>
+                  {filteredTasks.length} / {TASK_CATALOG.length}
+                </span>
+              </div>
 
               <div style={{
                 maxHeight: 420, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6,
                 paddingRight: 4,
               }}>
-                {TASK_CATALOG.map(task => (
+                {filteredTasks.length === 0 ? (
+                  <div style={{
+                    padding: 24, textAlign: 'center', color: '#6c7086', fontSize: 13,
+                    background: '#181825', borderRadius: 6,
+                  }}>
+                    No tasks match the current filters.
+                  </div>
+                ) : filteredTasks.map(task => (
                   <TaskRow
                     key={task.taskId}
                     task={task}
+                    stats={taskStats[task.taskId]}
                     isSelected={selectedTask?.taskId === task.taskId}
                     onClick={() => setSelectedTask(task)}
                   />
@@ -339,7 +424,8 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                 </button>
               </div>
             </FadeIn>
-          )}
+            );
+          })()}
 
           {/* ── Step 3: Mode + Role ── */}
           {step === 'mode' && (
@@ -705,10 +791,11 @@ function FadeIn({ children }: { children: React.ReactNode }) {
   </div>;
 }
 
-function TaskRow({ task, isSelected, onClick }: {
+function TaskRow({ task, isSelected, onClick, stats }: {
   task: TaskEntry;
   isSelected: boolean;
   onClick: () => void;
+  stats?: TaskStats;
 }) {
   // Per-task progress badges removed by request — progress is shown
   // per-mode on the Mode selection screen (a participant can have
@@ -747,8 +834,24 @@ function TaskRow({ task, isSelected, onClick }: {
             {task.taskId}
           </span>
         </div>
-        <span style={{ color: '#585b70', fontSize: 11, flexShrink: 0, marginLeft: 8 }}>
-          {task.category}
+        <span style={{
+          display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, marginLeft: 8,
+          color: '#585b70', fontSize: 11,
+        }}>
+          {stats && stats.attempters > 0 && (
+            <span
+              title={`${stats.attempters} participant${stats.attempters === 1 ? '' : 's'} attempted, ${stats.completers} completed`}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '1px 6px', borderRadius: 10,
+                background: '#313244', fontFamily: 'ui-monospace, monospace',
+              }}
+            >
+              <span>👥 {stats.attempters}</span>
+              <span style={{ color: '#a6e3a1' }}>✓ {stats.completers}</span>
+            </span>
+          )}
+          <span>{task.category}</span>
         </span>
       </div>
       {/* Show description when selected */}

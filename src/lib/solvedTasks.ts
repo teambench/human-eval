@@ -105,6 +105,52 @@ export async function recordTaskAttempt(
   } catch (err) {
     console.warn('recordTaskAttempt: Firebase write failed', err);
   }
+
+  // 3) Global aggregate for the lobby's "N attempted / N completed" badges.
+  // Uses presence records keyed by the sanitized email, so:
+  //   - re-attempts by the same user don't double-count
+  //   - counts are derived cheaply by `Object.keys(...).length` on read
+  // No transactions needed (write-same-value is idempotent).
+  try {
+    await set(ref(db, `teambench/taskStats/${taskId}/attempters/${safeEmail}`), true);
+    if (pass) {
+      await set(ref(db, `teambench/taskStats/${taskId}/completers/${safeEmail}`), true);
+    }
+  } catch (err) {
+    console.warn('recordTaskAttempt: taskStats write failed', err);
+  }
+}
+
+/** Aggregate counts derived from teambench/taskStats for lobby badges. */
+export interface TaskStats {
+  attempters: number;
+  completers: number;
+}
+
+/**
+ * Subscribe to global per-task attempt/completion counts. Emits the full
+ * { [taskId]: TaskStats } map on every change, driven by the presence
+ * records written in recordTaskAttempt above.
+ */
+export function subscribeToTaskStats(
+  cb: (stats: Record<string, TaskStats>) => void,
+): () => void {
+  return onValue(ref(db, 'teambench/taskStats'), (snap) => {
+    const out: Record<string, TaskStats> = {};
+    if (snap.exists()) {
+      const data = snap.val() as Record<
+        string,
+        { attempters?: Record<string, true>; completers?: Record<string, true> }
+      >;
+      for (const [tid, val] of Object.entries(data || {})) {
+        out[tid] = {
+          attempters: Object.keys(val?.attempters || {}).length,
+          completers: Object.keys(val?.completers || {}).length,
+        };
+      }
+    }
+    cb(out);
+  });
 }
 
 /**
