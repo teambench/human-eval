@@ -85,7 +85,7 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
             PLANNER
           </span>
           <span style={{ color: '#cdd6f4', fontSize: 14 }}>
-            {session.taskConfig.taskId} &middot; {session.taskConfig.category} &middot; {session.taskConfig.difficulty}
+            {session.taskConfig.displayName ?? session.taskConfig.taskId} &middot; {session.taskConfig.category} &middot; {session.taskConfig.difficulty}
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>

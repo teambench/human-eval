@@ -1,8 +1,13 @@
 import { TaskConfig } from '../types';
 
-// Minimal task entry for the picker (full spec/files loaded on demand later)
+// Minimal task entry for the picker (full spec/files loaded on demand later).
+// `displayName` is the human-readable title shown in the picker and each
+// role's header; `taskId` stays as the internal key for Firebase paths,
+// grader lookup, localStorage keys, and container staging — so renaming
+// only touches display, not wiring.
 export interface TaskEntry {
   taskId: string;
+  displayName: string;
   category: string;
   difficulty: 'easy' | 'medium' | 'hard' | 'expert';
   description: string;
@@ -13,67 +18,68 @@ export interface TaskEntry {
 // IMPORTANT: this list must match exactly — participants should ONLY see these.
 export const TASK_CATALOG: TaskEntry[] = [
   // Adversarial
-  { taskId: 'TRAP1_spec_conflict', category: 'Adversarial', difficulty: 'hard', description: 'Spec contradicts secondary docs; determine which 4 of 7 endpoints need validation and which 3 are intentionally relaxed' },
+  { taskId: 'TRAP1_spec_conflict', displayName: 'Contradictory API Specs', category: 'Adversarial', difficulty: 'hard', description: 'Spec contradicts secondary docs; determine which 4 of 7 endpoints need validation and which 3 are intentionally relaxed' },
 
   // Code Review
-  { taskId: 'CR4_api_review', category: 'Code Review', difficulty: 'hard', description: 'Fix multiple API design violations: routing, naming, status codes, pagination, and error response format' },
+  { taskId: 'CR4_api_review', displayName: 'API Design Review', category: 'Code Review', difficulty: 'hard', description: 'Fix multiple API design violations: routing, naming, status codes, pagination, and error response format' },
 
   // Cross-System Integration
-  { taskId: 'CROSS1_api_contract', category: 'Cross-System Integration', difficulty: 'hard', description: 'Fix 3 mismatches between a Go server and Python client: field naming, pagination keys, and error format' },
+  { taskId: 'CROSS1_api_contract', displayName: 'Go/Python API Contract Fix', category: 'Cross-System Integration', difficulty: 'hard', description: 'Fix 3 mismatches between a Go server and Python client: field naming, pagination keys, and error format' },
 
   // Data Engineering
-  { taskId: 'D6_data_reconcile', category: 'Data Engineering', difficulty: 'expert', description: 'Reconcile subscriber records across two systems with conflicting fields, manual overrides, and missing data' },
+  { taskId: 'D6_data_reconcile', displayName: 'Subscriber Record Reconciliation', category: 'Data Engineering', difficulty: 'expert', description: 'Reconcile subscriber records across two systems with conflicting fields, manual overrides, and missing data' },
 
   // Distributed Systems
-  { taskId: 'DIST1_queue_race', category: 'Distributed Systems', difficulty: 'expert', description: 'Fix 3 race conditions in a message queue: TOCTOU capacity, missing ack, and type-unsafe priority comparison' },
+  { taskId: 'DIST1_queue_race', displayName: 'Message Queue Race Conditions', category: 'Distributed Systems', difficulty: 'expert', description: 'Fix 3 race conditions in a message queue: TOCTOU capacity, missing ack, and type-unsafe priority comparison' },
 
   // GitHub Issues (Real-World)
-  { taskId: 'GH1002_scipy_24753', category: 'GitHub Issues (Real-World)', difficulty: 'medium', description: 'Fix a real scipy bug from PR #24753 — Cython memoryview const qualifier issue' },
+  { taskId: 'GH1002_scipy_24753', displayName: 'SciPy Cython Memoryview Fix', category: 'GitHub Issues (Real-World)', difficulty: 'medium', description: 'Fix a real scipy bug from PR #24753 — Cython memoryview const qualifier issue' },
 
   // Incident Response
-  { taskId: 'INC1_cascade_failure', category: 'Incident Response', difficulty: 'hard', description: 'Diagnose root cause of a cascading service failure and add retry/guard logic in the correct order' },
+  { taskId: 'INC1_cascade_failure', displayName: 'Cascading Service Failure', category: 'Incident Response', difficulty: 'hard', description: 'Diagnose root cause of a cascading service failure and add retry/guard logic in the correct order' },
 
   // Information Retrieval
-  { taskId: 'IR2_misinformation_trap', category: 'Information Retrieval', difficulty: 'hard', description: 'Answer a factual question by cross-referencing 3 documents, one of which contains planted misinformation' },
+  { taskId: 'IR2_misinformation_trap', displayName: 'Misinformation in Multi-Doc QA', category: 'Information Retrieval', difficulty: 'hard', description: 'Answer a factual question by cross-referencing 3 documents, one of which contains planted misinformation' },
 
   // Long-Horizon
-  { taskId: 'LH2_budgeted_workflow', category: 'Long-Horizon', difficulty: 'expert', description: 'Fix invalid data files and produce a budget report within a 20-execution budget constraint' },
+  { taskId: 'LH2_budgeted_workflow', displayName: 'Budgeted Data Workflow', category: 'Long-Horizon', difficulty: 'expert', description: 'Fix invalid data files and produce a budget report within a 20-execution budget constraint' },
 
   // Multi-language
-  { taskId: 'JS2_xss_sanitize', category: 'Multi-language', difficulty: 'hard', description: 'Fix XSS vulnerabilities across a Node.js/EJS app: sanitize HTML, validate URLs, add CSP headers' },
+  { taskId: 'JS2_xss_sanitize', displayName: 'Node.js XSS Sanitization', category: 'Multi-language', difficulty: 'hard', description: 'Fix XSS vulnerabilities across a Node.js/EJS app: sanitize HTML, validate URLs, add CSP headers' },
 
   // Operations
-  { taskId: 'O6_perf_tuning', category: 'Operations', difficulty: 'expert', description: 'Tune 5 config knobs to meet CPU, memory, latency, throughput, and error-rate targets simultaneously' },
+  { taskId: 'O6_perf_tuning', displayName: 'Five-Knob Performance Tuning', category: 'Operations', difficulty: 'expert', description: 'Tune 5 config knobs to meet CPU, memory, latency, throughput, and error-rate targets simultaneously' },
 
   // API Design
-  { taskId: 'API1_version_compat', category: 'API Design', difficulty: 'hard', description: 'Add v1 compatibility shims to 3 endpoints while deliberately NOT shimming a security endpoint' },
+  { taskId: 'API1_version_compat', displayName: 'v1/v2 API Compatibility Shims', category: 'API Design', difficulty: 'hard', description: 'Add v1 compatibility shims to 3 endpoints while deliberately NOT shimming a security endpoint' },
 
   // GitHub Issues (Real-World)
-  { taskId: 'GH103_redis-py_3998', category: 'GitHub Issues (Real-World)', difficulty: 'medium', description: 'Fix redis-py connection repr to mask sensitive fields (password, SSL credentials)' },
+  { taskId: 'GH103_redis-py_3998', displayName: 'redis-py Password Masking', category: 'GitHub Issues (Real-World)', difficulty: 'medium', description: 'Fix redis-py connection repr to mask sensitive fields (password, SSL credentials)' },
 
   // Pipeline
-  { taskId: 'PIPE2_data_pipeline', category: 'Pipeline', difficulty: 'hard', description: 'Fix 3 bugs in a multi-stage ETL pipeline: over-aggressive null filtering, wrong truncation limit, swapped columns' },
+  { taskId: 'PIPE2_data_pipeline', displayName: 'ETL Pipeline Bug Fixes', category: 'Pipeline', difficulty: 'hard', description: 'Fix 3 bugs in a multi-stage ETL pipeline: over-aggressive null filtering, wrong truncation limit, swapped columns' },
 
   // Policy / Access Control
-  { taskId: 'P3_access_control', category: 'Policy', difficulty: 'hard', description: 'Implement RBAC with deny-by-default, role-based endpoint permissions, and audit logging' },
+  { taskId: 'P3_access_control', displayName: 'RBAC Access Control', category: 'Policy', difficulty: 'hard', description: 'Implement RBAC with deny-by-default, role-based endpoint permissions, and audit logging' },
 
   // Data Science
-  { taskId: 'RDS10_survey_analysis', category: 'Data Science', difficulty: 'hard', description: 'Run OLS regression on survey data to measure remote-work effect on job satisfaction with proper controls' },
-  { taskId: 'RDS13_smote_leakage', category: 'Data Science', difficulty: 'hard', description: 'Fix data leakage in a fraud detection pipeline: apply SMOTE after train/test split, not before' },
+  { taskId: 'RDS10_survey_analysis', displayName: 'Remote-Work Survey Analysis', category: 'Data Science', difficulty: 'hard', description: 'Run OLS regression on survey data to measure remote-work effect on job satisfaction with proper controls' },
+  { taskId: 'RDS13_smote_leakage', displayName: 'SMOTE Data-Leakage Fix', category: 'Data Science', difficulty: 'hard', description: 'Fix data leakage in a fraud detection pipeline: apply SMOTE after train/test split, not before' },
 
   // Security / Cryptography
-  { taskId: 'CRYPTO1_nonce_reuse', category: 'Security', difficulty: 'expert', description: 'Fix 3 crypto bugs (counter nonce, weak PBKDF2, truncated tag) while preserving a correct salt function' },
+  { taskId: 'CRYPTO1_nonce_reuse', displayName: 'AES-GCM Nonce & KDF Fix', category: 'Security', difficulty: 'expert', description: 'Fix 3 crypto bugs (counter nonce, weak PBKDF2, truncated tag) while preserving a correct salt function' },
 
   // Multi-language (Go)
-  { taskId: 'GO1_concurrency_fix', category: 'Multi-language', difficulty: 'hard', description: 'Fix 3 Go concurrency bugs: unprotected shared map, unbuffered channel, and lock ordering deadlock' },
+  { taskId: 'GO1_concurrency_fix', displayName: 'Go Concurrency Bugs', category: 'Multi-language', difficulty: 'hard', description: 'Fix 3 Go concurrency bugs: unprotected shared map, unbuffered channel, and lock ordering deadlock' },
 
   // Testing
-  { taskId: 'TEST3_integration', category: 'Testing', difficulty: 'hard', description: 'Write integration tests that cover CRUD, auth, search, pagination, schema validation, and mutation detection' },
+  { taskId: 'TEST3_integration', displayName: 'API Integration Test Suite', category: 'Testing', difficulty: 'hard', description: 'Write integration tests that cover CRUD, auth, search, pagination, schema validation, and mutation detection' },
 ];
 
 // Demo task with full spec/files for testing the interface
 export const DEMO_TASK: TaskConfig = {
   taskId: 'DEMO_api_fix',
+  displayName: 'Demo: API Response Format Fix',
   category: 'API Design',
   difficulty: 'medium',
   timeLimit: 1800,

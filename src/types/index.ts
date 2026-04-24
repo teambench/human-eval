@@ -36,6 +36,12 @@ export interface ActionLog {
 
 export interface TaskConfig {
   taskId: string;
+  // Human-readable title shown in task lists and role headers instead of
+  // the raw taskId (e.g. "Remote-Work Survey Analysis" vs
+  // "RDS10_survey_analysis"). Optional — falls back to taskId. The raw
+  // taskId is still the source of truth for Firebase paths, grader
+  // lookup, localStorage keys, etc., so this is display-only.
+  displayName?: string;
   category: string;
   difficulty: string;
   specMd: string;

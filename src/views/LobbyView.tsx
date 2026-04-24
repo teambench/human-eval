@@ -129,11 +129,12 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
       ? { ...DEMO_TASK }
       : {
           taskId: selectedTask.taskId,
+          displayName: selectedTask.displayName,
           category: selectedTask.category,
           difficulty: selectedTask.difficulty,
           timeLimit: 1800,
-          specMd: `# ${selectedTask.taskId}\n\nRead \`brief.md\` in the workspace terminal for the full task description.`,
-          briefMd: `# ${selectedTask.taskId}\n\nLoading task from backend... See \`brief.md\` in /workspace.`,
+          specMd: `# ${selectedTask.displayName}\n\nRead \`brief.md\` in the workspace terminal for the full task description.`,
+          briefMd: `# ${selectedTask.displayName}\n\nLoading task from backend... See \`brief.md\` in /workspace.`,
           files: [],
         };
     onJoin(taskConfig, selectedRole, mode || 'team', profile.name.trim(), profile);
@@ -347,7 +348,7 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                 Mode
               </h2>
               <p style={{ color: '#585b70', fontSize: 13, textAlign: 'center', margin: '0 0 20px' }}>
-                <span style={{ color: '#89b4fa' }}>{selectedTask?.taskId}</span>
+                <span style={{ color: '#89b4fa' }}>{selectedTask?.displayName}</span>
                 {' '}&middot;{' '}
                 <span style={{ color: DIFFICULTY_COLORS[selectedTask?.difficulty || 'medium'] }}>
                   {selectedTask?.difficulty}
@@ -723,16 +724,32 @@ function TaskRow({ task, isSelected, onClick }: {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           <span style={{
             fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
-            color: '#000', background: DIFFICULTY_COLORS[task.difficulty],
+            color: '#000', background: DIFFICULTY_COLORS[task.difficulty], flexShrink: 0,
           }}>
             {task.difficulty.toUpperCase()}
           </span>
-          <span style={{ color: '#cdd6f4', fontWeight: 600, fontSize: 13 }}>{task.taskId}</span>
+          <span style={{
+            color: '#cdd6f4', fontWeight: 600, fontSize: 13,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {task.displayName}
+          </span>
+          <span
+            title={task.taskId}
+            style={{
+              color: '#585b70', fontSize: 10, fontFamily: 'ui-monospace, monospace',
+              flexShrink: 0,
+            }}
+          >
+            {task.taskId}
+          </span>
         </div>
-        <span style={{ color: '#585b70', fontSize: 11 }}>{task.category}</span>
+        <span style={{ color: '#585b70', fontSize: 11, flexShrink: 0, marginLeft: 8 }}>
+          {task.category}
+        </span>
       </div>
       {/* Show description when selected */}
       {isSelected && (
