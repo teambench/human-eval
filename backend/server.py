@@ -293,6 +293,15 @@ def _stage_task_workspace(task_id: str, workspace_dir: str, seed: int = DEFAULT_
     if info["brief"]:
         with open(os.path.join(ws_path, "brief.md"), "w") as f:
             f.write(info["brief"])
+    # Stage spec.md too — without this the Spec tab in OracleView/VerifierView
+    # shows the LobbyView placeholder ("Read brief.md...") for every task,
+    # because the spec is read into `info["spec"]` but was previously never
+    # written to disk. Affects all 30 human-eval tasks; high-impact one-line
+    # fix. (See useFirebaseSession.fetchOnce — it overrides specMd from
+    # the workspace's /files response.)
+    if info["spec"]:
+        with open(os.path.join(ws_path, "spec.md"), "w") as f:
+            f.write(info["spec"])
     readme_human = (
         "# Human Evaluation Workspace\n\n"
         f"Task: **{task_id}** (seed {seed})\n\n"

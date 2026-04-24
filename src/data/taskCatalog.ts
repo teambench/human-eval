@@ -107,7 +107,9 @@ export const TASK_CATALOG: TaskEntry[] = [
   // Real-World GitHub
   { taskId: 'GH16_fiber_cors_logic', displayName: 'Go Fiber CORS Middleware Fix', category: 'GitHub Issues (Real-World)', difficulty: 'easy', description: 'Fix a CORS middleware bug in Go Fiber: OR-vs-AND logic breaks non-preflight requests with multiple headers' },
   { taskId: 'GH15_gin_context_key', displayName: 'Go Gin Context-Key Fix', category: 'GitHub Issues (Real-World)', difficulty: 'easy', description: 'Fix a Go Gin context-key type violation that collides with OpenTelemetry; use a typed key instead of a bare string' },
-  { taskId: 'GH1201_mlflow_21832', displayName: 'MLflow Flaky Test Fix', category: 'GitHub Issues (Real-World)', difficulty: 'easy', description: 'Fix a flaky MLflow test (test_create_model_version_with_validation_regex) by disabling background job execution in the fixture' },
+  // GH1201_mlflow_21832 removed: 30-min limit + MLflow codebase exploration +
+  // PR-template spec was a scope mismatch flagged in the N=30 audit. Move
+  // back as a "stretch" task if/when timer becomes per-task configurable.
 ];
 
 // Demo task with full spec/files for testing the interface
