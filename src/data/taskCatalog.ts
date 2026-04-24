@@ -74,6 +74,40 @@ export const TASK_CATALOG: TaskEntry[] = [
 
   // Testing
   { taskId: 'TEST3_integration', displayName: 'API Integration Test Suite', category: 'Testing', difficulty: 'hard', description: 'Write integration tests that cover CRUD, auth, search, pagination, schema validation, and mutation detection' },
+
+  // ── N=10 EASY TASKS (added 2026-04-24 per collaborator feedback that
+  // the hard/expert-heavy N=20 intimidated participants). Every task
+  // here has a verified grade.sh, a seeded generator, and prior
+  // ablation-run data, so they're not fresh/unvalidated additions.
+  // Ordered to alternate category with the N=20 above for smoother
+  // scrolling, and all marked difficulty='easy' so they cluster at
+  // the top when the picker sorts by difficulty. ──
+
+  // Data Engineering
+  { taskId: 'D8_csv_cleanup', displayName: 'Messy CSV Cleanup', category: 'Data Engineering', difficulty: 'easy', description: 'Clean a messy CSV (stray quotes, inconsistent nulls, bad encoding) using documented data-quality rules; output a normalized file' },
+
+  // Information Retrieval
+  { taskId: 'IR1_evidence_qa', displayName: 'Evidence-Based QA', category: 'Information Retrieval', difficulty: 'easy', description: 'Find the final approved budget for a fictional "Titan Initiative" by cross-referencing an offline 3-document corpus; submit JSON with citations' },
+
+  // Testing
+  { taskId: 'TEST8_unit_basic', displayName: 'Unit Test Basics', category: 'Testing', difficulty: 'easy', description: 'Fix 3 bugs in mathutils.py and write the missing unit tests that would have caught them' },
+
+  // Code Review
+  { taskId: 'CR2_style_enforce', displayName: 'Python Style Enforcement', category: 'Code Review', difficulty: 'easy', description: 'Fix lint/style violations in a small Python module (imports, naming, unused vars, type hints) without changing behavior' },
+
+  // Security
+  { taskId: 'S7_env_config', displayName: 'Environment Variable Bugs', category: 'Security', difficulty: 'easy', description: 'Fix env-var handling so the app starts cleanly with no vars set: defaults, type coercion, missing-required errors' },
+
+  // Operations
+  { taskId: 'O8_dockerfile_fix', displayName: 'Dockerfile Repair', category: 'Operations', difficulty: 'easy', description: 'Fix a broken Dockerfile for a Python web app: base image, COPY order, EXPOSE port, CMD, working dir' },
+
+  // Policy
+  { taskId: 'P6_license_check', displayName: 'License Compatibility Check', category: 'Policy', difficulty: 'easy', description: 'Identify and replace license-incompatible dependencies in requirements.txt using the approved alternatives list' },
+
+  // Real-World GitHub
+  { taskId: 'GH16_fiber_cors_logic', displayName: 'Go Fiber CORS Middleware Fix', category: 'GitHub Issues (Real-World)', difficulty: 'easy', description: 'Fix a CORS middleware bug in Go Fiber: OR-vs-AND logic breaks non-preflight requests with multiple headers' },
+  { taskId: 'GH15_gin_context_key', displayName: 'Go Gin Context-Key Fix', category: 'GitHub Issues (Real-World)', difficulty: 'easy', description: 'Fix a Go Gin context-key type violation that collides with OpenTelemetry; use a typed key instead of a bare string' },
+  { taskId: 'GH1201_mlflow_21832', displayName: 'MLflow Flaky Test Fix', category: 'GitHub Issues (Real-World)', difficulty: 'easy', description: 'Fix a flaky MLflow test (test_create_model_version_with_validation_regex) by disabling background job execution in the fixture' },
 ];
 
 // Demo task with full spec/files for testing the interface
