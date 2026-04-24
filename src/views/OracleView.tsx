@@ -1,4 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
+import { push, ref, set } from 'firebase/database';
+import { db } from '../firebase';
 import { MarkdownViewer } from '../components/MarkdownViewer';
 import { FileTree } from '../components/FileTree';
 import { CodeEditor } from '../components/CodeEditor';
@@ -69,6 +71,20 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
   const [grading, setGrading] = useState(false);
   const [gradeResult, setGradeResult] = useState<{ status: string; score?: any; output?: string } | null>(null);
   const [finished, setFinished] = useState(false);
+  // Self-reported phase — optional tracking for solo mode. The participant
+  // can click Plan/Execute/Verify to tag their workflow transitions; the
+  // click emits a phase_change log event (with source='self_report'). It
+  // does NOT change session.phase or any access control. Analysis uses
+  // these events to compute per-phase durations comparable to team-mode
+  // phase boundaries. Default 'execution' matches the session init phase.
+  const [reportedPhase, setReportedPhase] = useState<'planning' | 'execution' | 'verification'>('execution');
+  const reportPhase = useCallback((p: 'planning' | 'execution' | 'verification') => {
+    setReportedPhase(prev => {
+      if (prev === p) return prev;
+      onLog('phase_change', { from: prev, to: p, source: 'self_report' });
+      return p;
+    });
+  }, [onLog]);
 
   // Resizable panel sizes
   const [leftWidth, setLeftWidth] = useState(380);
@@ -95,6 +111,32 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
     const result = await gradeSession(session.sessionId);
     setGradeResult(result);
     onLog('oracle_grade_result', { ...result });
+    // Persist a structured grade record to Firebase so solo-mode runs have
+    // the same /lastGrade + /gradeHistory schema as team/hybrid. Post-hoc
+    // analysis can read a uniform path across all three modes.
+    try {
+      const sc: any = result?.score ?? null;
+      const pass = sc?.pass === true;
+      const partial = typeof sc?.secondary?.partial_score === 'number'
+        ? sc.secondary.partial_score : (pass ? 1 : 0);
+      const payload = {
+        ok: result?.status !== 'error',
+        verdict: pass ? 'pass' : 'fail',
+        score: partial,
+        scoreDetail: sc,
+        output: result?.output ?? '',
+        error: result?.status === 'error' ? (result.output || 'grader error') : null,
+        timestamp: Date.now(),
+      };
+      await set(ref(db, `teambench/sessions/${session.sessionId}/lastGrade`), payload);
+      await push(ref(db, `teambench/sessions/${session.sessionId}/gradeHistory`), {
+        ...payload,
+        triggeredBy: 'oracle_submit',
+        mode: 'oracle',
+      });
+    } catch (e) {
+      console.warn('persist oracle grade failed', e);
+    }
     // Persist attempt to Firebase (cross-device) + localStorage (instant cache).
     // Every grade increments attempts, regardless of score.
     try {
@@ -150,6 +192,43 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          {/* Optional self-reported phase chips. Clicking tags the current
+              workflow step (Plan → Execute → Verify) with a phase_change
+              log event for post-hoc per-phase duration analysis. Does not
+              gate access; participants may ignore these entirely. */}
+          {isActive && (
+            <div
+              role="group"
+              aria-label="Workflow phase (optional self-report)"
+              title="Optional: tag your current step so we can measure phase durations"
+              style={{
+                display: 'flex', alignItems: 'center', gap: 4,
+                background: '#181825', padding: '3px 4px', borderRadius: 6,
+                border: '1px solid #313244',
+              }}
+            >
+              {(['planning', 'execution', 'verification'] as const).map(p => {
+                const label = p === 'planning' ? 'Plan' : p === 'execution' ? 'Execute' : 'Verify';
+                const active = reportedPhase === p;
+                return (
+                  <button
+                    key={p}
+                    onClick={() => reportPhase(p)}
+                    title={`Tag current step as ${label}`}
+                    style={{
+                      padding: '3px 10px', border: 'none', borderRadius: 4,
+                      background: active ? '#cba6f7' : 'transparent',
+                      color: active ? '#1e1e2e' : '#a6adc8',
+                      fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                      transition: 'background 0.15s',
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <Timer startTime={session.startTime} timeLimit={session.taskConfig.timeLimit} />
           <span style={{
             background: '#313244', color: '#cdd6f4', padding: '4px 10px',

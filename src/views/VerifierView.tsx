@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { onValue, ref, set } from 'firebase/database';
+import { onValue, push, ref, set } from 'firebase/database';
 import { DiffEditor } from '@monaco-editor/react';
 import { db } from '../firebase';
 import { ChatPanel } from '../components/ChatPanel';
@@ -194,6 +194,17 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
           timestamp: Date.now(),
         };
         await set(ref(db, `teambench/sessions/${session.sessionId}/lastGrade`), payload);
+        // Also append to /gradeHistory so grade runs across remediation loops
+        // are preserved (lastGrade is overwritten on each run). Used by
+        // post-hoc analysis to align verifier decisions with the exact grader
+        // state the human was looking at.
+        try {
+          await push(ref(db, `teambench/sessions/${session.sessionId}/gradeHistory`), {
+            ...payload,
+            triggeredBy: 'verifier_auto',
+            mode: session.mode,
+          });
+        } catch { /* best-effort */ }
       } catch (e) {
         console.warn('auto-grade failed:', e);
       } finally {
@@ -211,7 +222,28 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
 
   const handleSubmitVerdict = () => {
     if (!verdict) return;
-    onLog('submit_verdict', { verdict, notes });
+    // Capture the grader state the verifier was looking at AT decision time.
+    // lastGrade is overwritten on each grade run, so we snapshot it into the
+    // decision record to preserve ground truth for override analysis.
+    const autoGraderVerdict = typeof lastGrade?.verdict === 'string' ? lastGrade.verdict : null;
+    const autoGraderScore = typeof lastGrade?.score === 'number' ? lastGrade.score : null;
+    const override = autoGraderVerdict != null && autoGraderVerdict !== verdict;
+    const decisionPayload = {
+      verdict,
+      notes,
+      autoGraderVerdict,
+      autoGraderScore,
+      override,
+      mode: session.mode,
+      timestamp: Date.now(),
+    };
+    onLog('submit_verdict', decisionPayload);
+    // Persistent decision history — one record per verdict submission,
+    // including the grader state and override flag. Enables override-
+    // correctness analysis against sample_solutions.
+    try {
+      push(ref(db, `teambench/sessions/${session.sessionId}/verifierDecisions`), decisionPayload);
+    } catch { /* best-effort */ }
 
     // Record per-mode attempt so the lobby's mode cards reflect that this
     // user has done/attempted this task in this specific mode. Pull email
@@ -551,7 +583,7 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                     actually solve the problem in the spec. Check the <strong style={{ color: '#a6adc8' }}>diff</strong>{' '}
                     and the <strong style={{ color: '#a6adc8' }}>grader output</strong>, then decide: PASS if the
                     fix is genuinely correct; FAIL if it isn't (even if tests pass). On FAIL your notes go
-                    back to the AI Executor for one more attempt.
+                    back to the AI Executor for another attempt.
                   </>
                 ) : (
                   <>
@@ -559,7 +591,7 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                     and the <strong style={{ color: '#a6adc8' }}>Auto-grader output</strong> for test results.
                     Pick <span style={{ color: '#10b981', fontWeight: 600 }}>PASS</span> if the fix is correct
                     and complete, <span style={{ color: '#f38ba8', fontWeight: 600 }}>FAIL</span> if something
-                    is missing or wrong. On FAIL, your notes are sent back to the Executor for one more attempt.
+                    is missing or wrong. On FAIL, your notes are sent back to the Executor for another attempt.
                   </>
                 )}
               </p>
