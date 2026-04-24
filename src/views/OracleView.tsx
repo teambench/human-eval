@@ -297,7 +297,23 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
               </div>
             )}
             <div style={{ flex: 1, minHeight: 0 }}>
-              <FileTree files={files} selectedPath={selectedFile} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
+              <FileTree
+                files={files.filter(f => {
+                  // Hide team-mode-only artefacts from the Solo file tree.
+                  // brief.md is written for the Executor and frequently says
+                  // "Follow the Planner's guidance precisely" — meaningless in
+                  // Solo. analysis_guidance.md is written for the Planner.
+                  // README_HUMAN.md is just generic terminal-usage instructions
+                  // (Solo participants don't need them spelled out alongside
+                  // the spec). The full spec is shown in the dedicated panel.
+                  if (f.path === 'brief.md') return false;
+                  if (f.path === 'analysis_guidance.md') return false;
+                  if (f.path === 'README_HUMAN.md') return false;
+                  return true;
+                })}
+                selectedPath={selectedFile}
+                onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }}
+              />
             </div>
           </div>
 

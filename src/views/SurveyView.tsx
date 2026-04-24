@@ -343,8 +343,75 @@ const SOLO_COUNTERFACTUAL: SoloItem[] = [
   },
 ];
 
+// ── Hybrid-mode (AI Planner + AI Executor + Human Verifier) items ─────
+//
+// Replaces SOLO_COUNTERFACTUAL for hybrid sessions. Counterfactual ("would
+// a teammate have helped?") doesn't make sense in hybrid because the
+// participant DID have AI teammates — what we want to measure is how
+// useful those AI teammates actually were, and what the human Verifier
+// role added on top of the auto-grader.
+const HYBRID_AI_TEAMMATE: SoloItem[] = [
+  {
+    id: 'ai_planner_useful',
+    label: 'AI Planner usefulness',
+    prompt: 'The AI Planner\'s analysis was clear, accurate, and useful for grading the executor\'s work.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'ai_executor_quality',
+    label: 'AI Executor quality',
+    prompt: 'The AI Executor\'s code edits were the kind of fix I would have made myself.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'ai_planner_trust',
+    label: 'Trust in AI Planner',
+    prompt: 'I trusted the AI Planner\'s analysis without needing to verify it independently.',
+    anchorLow: 'Did not trust',
+    anchorHigh: 'Fully trusted',
+  },
+  {
+    id: 'ai_executor_trust',
+    label: 'Trust in AI Executor',
+    prompt: 'I trusted the AI Executor\'s edits without needing to verify them independently.',
+    anchorLow: 'Did not trust',
+    anchorHigh: 'Fully trusted',
+  },
+  {
+    id: 'human_planner_preferred',
+    label: 'Prefer human Planner',
+    prompt: 'On this task, a human Planner would have done a better job than the AI.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'human_executor_preferred',
+    label: 'Prefer human Executor',
+    prompt: 'On this task, a human Executor would have done a better job than the AI.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'verifier_role_value',
+    label: 'Value of human Verifier role',
+    prompt: 'My role as the human Verifier added value beyond what the auto-grader provides — I caught (or could have caught) issues the grader missed.',
+    anchorLow: 'Strongly disagree',
+    anchorHigh: 'Strongly agree',
+  },
+  {
+    id: 'overrode_grader',
+    label: 'Did you overrule the grader?',
+    prompt: 'On this task, my final verdict differed from what the auto-grader said (PASS when grader failed, or FAIL when grader passed).',
+    anchorLow: 'Definitely not',
+    anchorHigh: 'Yes, I overruled',
+  },
+];
+
 export function SurveyView({ sessionId, taskId, role, mode, participants, onComplete }: SurveyViewProps) {
   const isTeam = mode === 'team';
+  const isHybrid = mode === 'hybrid';
 
   // ── Team-mode state: peer + self ratings ──
   const targets: { id: string; label: string; type: 'peer' | 'self' }[] = [];
@@ -366,17 +433,58 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
     });
   }
 
-  const [ratings, setRatings] = useState<Record<string, Record<string, number>>>({});
+  // All Likert items pre-default to 3 (neutral) so the participant can scan
+  // the form and only adjust items where they disagree — much lower
+  // cognitive load than clicking every item.
+  // BUT: every visible Likert input also tracks whether the user actually
+  // CLICKED it. The analysis pipeline filters on this flag to distinguish
+  // "deliberate 3" from "kept default" — otherwise the paper's means would
+  // be silently biased toward 3 (Krosnick 1991 satisficing).
+  const DEFAULT_LIKERT = 3;
+  const initFlat = (items: { id: string }[]) =>
+    Object.fromEntries(items.map(i => [i.id, DEFAULT_LIKERT]));
+  const initNested = (targetIds: string[], items: { id: string }[]) =>
+    Object.fromEntries(targetIds.map(t => [t, initFlat(items)]));
+
+  const [ratings, setRatings] = useState<Record<string, Record<string, number>>>(
+    () => isTeam ? initNested(targets.map(t => t.id), DIMENSIONS) : {},
+  );
   // Role-specific behavioral items per peer: roleSpecific[peerRole][itemId] = n.
-  const [roleSpecific, setRoleSpecific] = useState<Record<string, Record<string, number>>>({});
+  const [roleSpecific, setRoleSpecific] = useState<Record<string, Record<string, number>>>(
+    () => isTeam
+      ? Object.fromEntries(targets.filter(t => t.type === 'peer')
+          .map(t => [t.id, initFlat(ROLE_SPECIFIC_ITEMS[t.id] ?? [])]))
+      : {},
+  );
   // ── Team-mode add-ons ──
-  const [coordination, setCoordination] = useState<Record<string, number>>({});
-  const [roleNeed, setRoleNeed] = useState<Record<string, number>>({});
+  const [coordination, setCoordination] = useState<Record<string, number>>(() => initFlat(TEAM_COORDINATION));
+  const [roleNeed, setRoleNeed] = useState<Record<string, number>>(() => initFlat(TEAM_ROLE_NEED));
   // ── Solo-mode state ──
-  const [taskItems, setTaskItems] = useState<Record<string, number>>({});
-  const [counterfactual, setCounterfactual] = useState<Record<string, number>>({});
+  const [taskItems, setTaskItems] = useState<Record<string, number>>(() => initFlat(SOLO_TASK_ITEMS));
+  const [counterfactual, setCounterfactual] = useState<Record<string, number>>(() => initFlat(SOLO_COUNTERFACTUAL));
+  // ── Hybrid-mode state (AI Planner + AI Executor + Human Verifier) ──
+  const [hybridAiTeammate, setHybridAiTeammate] = useState<Record<string, number>>(() => initFlat(HYBRID_AI_TEAMMATE));
+
+  // Set of item IDs the user actively interacted with. Items never touched
+  // mean the participant accepted the default 3 — analysis filters on this.
+  // Keys are namespaced by block so duplicates across blocks don't collide.
+  const [touchedItems, setTouchedItems] = useState<Set<string>>(new Set());
+  const markTouched = (key: string) =>
+    setTouchedItems(prev => prev.has(key) ? prev : new Set(prev).add(key));
   // ── Shared: structured primary-factor (both modes) ──
-  const [primaryFactor, setPrimaryFactor] = useState<string | null>(null);
+  // Was forced single-choice; per user feedback, allow multi-select since
+  // tasks usually have several contributing factors. Cap at 3 so the field
+  // still surfaces "primary" causes — without a cap, participants will check
+  // everything and the field loses signal.
+  const PRIMARY_FACTOR_MAX = 3;
+  const [primaryFactors, setPrimaryFactors] = useState<Set<string>>(new Set());
+  const togglePrimaryFactor = (id: string) =>
+    setPrimaryFactors(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else if (next.size < PRIMARY_FACTOR_MAX) next.add(id);
+      return next;
+    });
   const [primaryFactorNote, setPrimaryFactorNote] = useState('');
 
   // ── Attention check: always required. Correct answer is the value
@@ -395,7 +503,7 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
 
   // Validation. Attention check + primary-factor are required in both modes.
   let totalRequired = 2;
-  let totalFilled = (attention !== null ? 1 : 0) + (primaryFactor ? 1 : 0);
+  let totalFilled = (attention !== null ? 1 : 0) + (primaryFactors.size > 0 ? 1 : 0);
   if (isTeam) {
     totalRequired += targets.length * DIMENSIONS.length;
     totalFilled += Object.values(ratings).reduce((sum, dims) => sum + Object.keys(dims).length, 0);
@@ -405,6 +513,12 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
     totalFilled += Object.values(roleSpecific).reduce((sum, items) => sum + Object.keys(items).length, 0);
     totalRequired += TEAM_COORDINATION.length + TEAM_ROLE_NEED.length;
     totalFilled += Object.keys(coordination).length + Object.keys(roleNeed).length;
+  } else if (isHybrid) {
+    // Hybrid still asks the universal task experience (difficulty/effort/...)
+    // but swaps counterfactual for HYBRID_AI_TEAMMATE since the participant
+    // actually had AI teammates.
+    totalRequired += SOLO_TASK_ITEMS.length + HYBRID_AI_TEAMMATE.length;
+    totalFilled += Object.keys(taskItems).length + Object.keys(hybridAiTeammate).length;
   } else {
     totalRequired += SOLO_TASK_ITEMS.length + SOLO_COUNTERFACTUAL.length;
     totalFilled += Object.keys(taskItems).length + Object.keys(counterfactual).length;
@@ -440,10 +554,33 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
         coordination,   // 6 items: info asymmetry, comms overhead, early plan, executor/verifier value, role-sep net
         roleNeed,       // 3 items: "stronger planner/executor/verifier would have changed outcome"
         // Structured failure-factor + optional note.
-        primaryFactor,
+        primaryFactors: Array.from(primaryFactors),
         primaryFactorNote,
         attentionCheck: { expected: 3, answer: attention, passed: attention === 3 },
         openEnded: { collaborationChallenge: challenge },
+        // Items the participant explicitly clicked. Items NOT in this set
+        // were left at the default 3 — analysis must distinguish "deliberate
+        // 3" from "kept default" or means will be biased toward midpoint.
+        touchedItems: Array.from(touchedItems),
+      };
+    } else if (isHybrid) {
+      surveyData = {
+        schema_version: '2.0',
+        instrument: 'TeamBench-Hybrid-Reflection',
+        reference: 'NASA-TLX (Hart & Staveland, 1988) + AI-trust scale',
+        timestamp: Date.now(),
+        timestampISO: new Date().toISOString(),
+        sessionId, taskId, mode,
+        respondentRole: role,
+        taskExperience: taskItems,                  // difficulty/effort/pressure/confidence
+        // 8 items: AI Planner/Executor usefulness + trust, human-preferred
+        // alternates, Verifier-role value, did-you-overrule-grader.
+        hybridAiTeammate,
+        primaryFactors: Array.from(primaryFactors),
+        primaryFactorNote,
+        attentionCheck: { expected: 3, answer: attention, passed: attention === 3 },
+        openEnded: { collaborationChallenge: challenge },
+        touchedItems: Array.from(touchedItems),
       };
     } else {
       surveyData = {
@@ -456,10 +593,11 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
         respondentRole: role,
         taskExperience: taskItems,                  // difficulty/effort/pressure/confidence
         counterfactualTeamValue: counterfactual,    // role counterfactual + domain + time
-        primaryFactor,
+        primaryFactors: Array.from(primaryFactors),
         primaryFactorNote,
         attentionCheck: { expected: 3, answer: attention, passed: attention === 3 },
         openEnded: { collaborationChallenge: challenge },
+        touchedItems: Array.from(touchedItems),
       };
     }
 
@@ -553,7 +691,7 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
                 <LikertScale
                   name={`task_${item.id}`}
                   value={taskItems[item.id] ?? null}
-                  onChange={v => setTaskItems(prev => ({ ...prev, [item.id]: v }))}
+                  onChange={v => { markTouched(`taskItems.${item.id}`); setTaskItems(prev => ({ ...prev, [item.id]: v })); }}
                 />
                 <div style={{
                   display: 'flex', justifyContent: 'space-between',
@@ -568,7 +706,7 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
         )}
 
         {/* ── Solo: counterfactual "would teamwork have helped?" ── */}
-        {!isTeam && (
+        {!isTeam && !isHybrid && (
           <div style={{
             background: '#1e1e2e', border: '1px solid #313244',
             borderRadius: 12, padding: 20, marginBottom: 16,
@@ -605,7 +743,59 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
                 <LikertScale
                   name={`counterfactual_${item.id}`}
                   value={counterfactual[item.id] ?? null}
-                  onChange={v => setCounterfactual(prev => ({ ...prev, [item.id]: v }))}
+                  onChange={v => { markTouched(`counterfactual.${item.id}`); setCounterfactual(prev => ({ ...prev, [item.id]: v })); }}
+                />
+                <div style={{
+                  display: 'flex', justifyContent: 'space-between',
+                  fontSize: 10, color: '#45475a', marginTop: 2, padding: '0 4px',
+                }}>
+                  <span>{item.anchorLow}</span>
+                  <span>{item.anchorHigh}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── Hybrid: AI-teammate quality + trust + Verifier-role value ── */}
+        {isHybrid && (
+          <div style={{
+            background: '#1e1e2e', border: '1px solid #313244',
+            borderRadius: 12, padding: 20, marginBottom: 16,
+          }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6,
+            }}>
+              <span style={{
+                fontSize: 11, fontWeight: 700, padding: '3px 8px',
+                borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.05em',
+                background: 'rgba(16, 185, 129, 0.15)', color: '#10b981',
+              }}>
+                AI Teammates
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4' }}>
+                How were the AI Planner and AI Executor on this task?
+              </span>
+            </div>
+            <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 16 }}>
+              Rate how much you agree with each statement (1 = strongly disagree, 5 = strongly agree).
+            </div>
+            {HYBRID_AI_TEAMMATE.map((item, i) => (
+              <div key={item.id} style={{
+                paddingBottom: i < HYBRID_AI_TEAMMATE.length - 1 ? 16 : 0,
+                marginBottom: i < HYBRID_AI_TEAMMATE.length - 1 ? 16 : 0,
+                borderBottom: i < HYBRID_AI_TEAMMATE.length - 1 ? '1px solid #313244' : 'none',
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4', marginBottom: 2 }}>
+                  {item.label}
+                </div>
+                <div style={{ fontSize: 12, color: '#6c7086', marginBottom: 8 }}>
+                  {item.prompt}
+                </div>
+                <LikertScale
+                  name={`hybrid_ai_${item.id}`}
+                  value={hybridAiTeammate[item.id] ?? null}
+                  onChange={v => { markTouched(`hybridAiTeammate.${item.id}`); setHybridAiTeammate(prev => ({ ...prev, [item.id]: v })); }}
                 />
                 <div style={{
                   display: 'flex', justifyContent: 'space-between',
@@ -657,7 +847,7 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
                 <LikertScale
                   name={`${target.id}_${dim.id}`}
                   value={ratings[target.id]?.[dim.id] ?? null}
-                  onChange={v => setRating(target.id, dim.id, v)}
+                  onChange={v => { markTouched(`ratings.${target.id}.${dim.id}`); setRating(target.id, dim.id, v); }}
                 />
                 <div style={{
                   display: 'flex', justifyContent: 'space-between',
@@ -698,10 +888,13 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
                     <LikertScale
                       name={`rs_${target.id}_${item.id}`}
                       value={roleSpecific[target.id]?.[item.id] ?? null}
-                      onChange={v => setRoleSpecific(prev => ({
-                        ...prev,
-                        [target.id]: { ...prev[target.id], [item.id]: v },
-                      }))}
+                      onChange={v => {
+                        markTouched(`roleSpecific.${target.id}.${item.id}`);
+                        setRoleSpecific(prev => ({
+                          ...prev,
+                          [target.id]: { ...prev[target.id], [item.id]: v },
+                        }));
+                      }}
                     />
                     <div style={{
                       display: 'flex', justifyContent: 'space-between',
@@ -757,7 +950,7 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
                 <LikertScale
                   name={`coord_${item.id}`}
                   value={coordination[item.id] ?? null}
-                  onChange={v => setCoordination(prev => ({ ...prev, [item.id]: v }))}
+                  onChange={v => { markTouched(`coordination.${item.id}`); setCoordination(prev => ({ ...prev, [item.id]: v })); }}
                 />
                 <div style={{
                   display: 'flex', justifyContent: 'space-between',
@@ -809,7 +1002,7 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
                 <LikertScale
                   name={`need_${item.id}`}
                   value={roleNeed[item.id] ?? null}
-                  onChange={v => setRoleNeed(prev => ({ ...prev, [item.id]: v }))}
+                  onChange={v => { markTouched(`roleNeed.${item.id}`); setRoleNeed(prev => ({ ...prev, [item.id]: v })); }}
                 />
                 <div style={{
                   display: 'flex', justifyContent: 'space-between',
@@ -840,33 +1033,48 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
             </span>
             <span style={{ fontSize: 13, fontWeight: 600, color: '#cdd6f4' }}>
               {isTeam
-                ? 'Which single factor most affected your team\'s outcome on this task?'
-                : 'Which single factor most affected how well you did on this task?'}
+                ? `Which factors most affected your team's outcome on this task? (select up to ${PRIMARY_FACTOR_MAX})`
+                : `Which factors most affected how well you did on this task? (select up to ${PRIMARY_FACTOR_MAX})`}
             </span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
             {(isTeam ? TEAM_PRIMARY_FACTORS : SOLO_PRIMARY_FACTORS).map(pf => {
-              const active = primaryFactor === pf.id;
+              const active = primaryFactors.has(pf.id);
+              const disabled = !active && primaryFactors.size >= PRIMARY_FACTOR_MAX;
               return (
                 <div
                   key={pf.id}
-                  onClick={() => setPrimaryFactor(pf.id)}
+                  onClick={() => { if (!disabled || active) togglePrimaryFactor(pf.id); }}
+                  title={disabled ? `Limit: ${PRIMARY_FACTOR_MAX} factors` : undefined}
                   style={{
                     padding: '10px 12px',
                     background: active ? 'rgba(137, 180, 250, 0.12)' : '#181825',
                     border: `1px solid ${active ? '#89b4fa' : '#313244'}`,
-                    borderRadius: 6, cursor: 'pointer', fontSize: 13,
-                    color: active ? '#cdd6f4' : '#a6adc8',
+                    borderRadius: 6,
+                    cursor: disabled ? 'not-allowed' : 'pointer',
+                    fontSize: 13,
+                    color: active ? '#cdd6f4' : disabled ? '#585b70' : '#a6adc8',
                     fontWeight: active ? 600 : 400,
+                    opacity: disabled ? 0.5 : 1,
                     transition: 'all 0.15s',
+                    display: 'flex', alignItems: 'center', gap: 8,
                   }}
                 >
-                  {pf.label}
+                  <span style={{
+                    width: 14, height: 14, borderRadius: 3,
+                    border: `1.5px solid ${active ? '#89b4fa' : '#45475a'}`,
+                    background: active ? '#89b4fa' : 'transparent',
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    color: '#000', fontSize: 10, fontWeight: 800, flexShrink: 0,
+                  }}>
+                    {active ? '✓' : ''}
+                  </span>
+                  <span>{pf.label}</span>
                 </div>
               );
             })}
           </div>
-          {primaryFactor && (
+          {primaryFactors.size > 0 && (
             <textarea
               value={primaryFactorNote}
               onChange={e => setPrimaryFactorNote(e.target.value)}
