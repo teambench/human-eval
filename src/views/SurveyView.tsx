@@ -308,38 +308,45 @@ const SOLO_PRIMARY_FACTORS = [
   { id: 'other', label: 'Other' },
 ];
 
+// Solo-mode counterfactual — types of help, not named team roles.
+// Item ids unchanged from earlier versions so historical data still cohorts;
+// labels and prompts reframed so the participant is not asked to project
+// into role boundaries they never experienced. Each item still maps to
+// a recognisable team-help category for cross-mode analysis (planning /
+// parallelization / review / domain / time), but the participant doesn't
+// see those names.
 const SOLO_COUNTERFACTUAL: SoloItem[] = [
   {
     id: 'cf_planner',
-    label: 'Help planning the approach (Planner role)',
-    prompt: 'A second person to analyze the problem and lay out the solution approach would have been valuable on this task.',
+    label: 'Help understanding what the task wanted',
+    prompt: 'Another person to talk through what the task actually wanted, and to lay out an approach before I started, would have been valuable.',
     anchorLow: 'Strongly disagree',
     anchorHigh: 'Strongly agree',
   },
   {
     id: 'cf_executor',
-    label: 'Help sharing the implementation workload',
-    prompt: 'A second person to split the coding (write parts of the fix in parallel, or take over while I read/tested) would have been valuable on this task.',
+    label: 'A second pair of hands on the implementation',
+    prompt: 'Another person to split the coding with me — writing parts in parallel, or taking over while I read or tested — would have been valuable.',
     anchorLow: 'Strongly disagree',
     anchorHigh: 'Strongly agree',
   },
   {
     id: 'cf_verifier',
-    label: 'Help verifying correctness (Verifier role)',
-    prompt: 'A second person to independently check my solution and catch mistakes would have been valuable on this task.',
+    label: 'A fresh pair of eyes to catch mistakes',
+    prompt: 'Another person to independently check my solution and catch mistakes I missed would have been valuable.',
     anchorLow: 'Strongly disagree',
     anchorHigh: 'Strongly agree',
   },
   {
     id: 'cf_domain',
-    label: 'Domain expertise I lacked',
+    label: 'Specific technical knowledge I lacked',
     prompt: 'I lacked specific technical knowledge that someone with the right expertise could have provided.',
     anchorLow: 'Strongly disagree',
     anchorHigh: 'Strongly agree',
   },
   {
     id: 'cf_time_only',
-    label: 'Time alone would have sufficed',
+    label: 'More time alone would have been enough',
     prompt: 'More time alone would have been enough — I did not need a teammate on this task.',
     anchorLow: 'Strongly disagree',
     anchorHigh: 'Strongly agree',
