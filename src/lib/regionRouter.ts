@@ -22,8 +22,8 @@ export interface RegionConfig {
 }
 
 export const REGIONS: Record<RegionId, RegionConfig> = {
-  sgp: { id: 'sgp', label: 'Singapore (APAC)',   host: 'proc-usc-suggested-communicate.trycloudflare.com' },
-  nyc: { id: 'nyc', label: 'New York (Americas)', host: 'altered-iso-insert-options.trycloudflare.com' },
+  sgp: { id: 'sgp', label: 'Singapore (APAC)',   host: 'sur-cards-times-census.trycloudflare.com' },
+  nyc: { id: 'nyc', label: 'New York (Americas)', host: 'radios-fence-cpu-bedroom.trycloudflare.com' },
 };
 
 const LS_KEY = 'teambench_region_v1';
