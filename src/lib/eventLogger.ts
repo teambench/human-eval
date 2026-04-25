@@ -178,13 +178,24 @@ export function useRawClickCapture(): void {
     function onClick(e: MouseEvent) {
       const tgt = e.target as HTMLElement | null;
       if (!tgt) return;
-      void logRawClickWith(c, {
+      // Firebase RTDB rejects writes containing undefined values, dropping
+      // the entire push silently. Build the payload incrementally so absent
+      // attrs are simply omitted from the record (vs becoming undefined).
+      const payload: Record<string, unknown> = {
         tagName: tgt.tagName,
-        ariaLabel: tgt.getAttribute('aria-label') || undefined,
-        text: (tgt.textContent || '').trim().slice(0, 80) || undefined,
-        x: e.clientX, y: e.clientY,
+        x: e.clientX,
+        y: e.clientY,
         viewport: `${window.innerWidth}x${window.innerHeight}`,
-      });
+      };
+      const aria = tgt.getAttribute('aria-label');
+      if (aria) payload.ariaLabel = aria;
+      const txt = (tgt.textContent || '').trim().slice(0, 80);
+      if (txt) payload.text = txt;
+      const id = tgt.id;
+      if (id) payload.elementId = id;
+      const cls = tgt.className;
+      if (typeof cls === 'string' && cls) payload.className = cls.slice(0, 120);
+      void logRawClickWith(c, payload);
     }
     document.addEventListener('click', onClick, { capture: true, passive: true });
     return () => document.removeEventListener('click', onClick, true);

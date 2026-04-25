@@ -66,9 +66,10 @@ export function participantInteractionsRawPath(
 }
 
 export function participantSurveyPath(
-  taskId: string, mode: SessionMode, sessionId: string, pid: string,
+  taskId: string, mode: SessionMode, sessionId: string, pid: string, role?: string,
 ): string {
-  return `${participantPath(taskId, mode, sessionId, pid)}/survey`;
+  const base = `${participantPath(taskId, mode, sessionId, pid)}/survey`;
+  return role ? `${base}/${role}` : base;
 }
 
 export function sharedArtifactsPath(

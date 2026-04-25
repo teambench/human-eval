@@ -610,10 +610,13 @@ export function SurveyView({ sessionId, taskId, role, mode, pid, participants, o
     } catch (err) {
       console.error('Failed to save survey:', err);
     }
-    // v2 mirror — same survey payload also written to per-participant path
+    // v2 mirror — survey is keyed by role so the same pid can never overwrite
+    // their own answers if (defensively) they ever fill more than one role.
+    // Path is teambench_new/tasks/{taskId}/{mode}/sessions/{sid}/participants/
+    //         {pid}/survey/{role}/.
     if (pid) {
       try {
-        await set(ref(db, participantSurveyPath(taskId, mode, sessionId, pid)), surveyData);
+        await set(ref(db, participantSurveyPath(taskId, mode, sessionId, pid, role)), surveyData);
       } catch (err) {
         console.warn('[v2 survey write]', err);
       }

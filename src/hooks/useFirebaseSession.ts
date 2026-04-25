@@ -9,7 +9,7 @@ import { groupForEmail, EXPERIMENT_ROUND } from '../lib/experimentGroup';
 import { participantIdFromEmail } from '../lib/participantId';
 import { recordEdit } from '../lib/fileDiff';
 import {
-  metaPath, participantProfilePath, participantInteractionsPath,
+  metaPath, participantPath, participantProfilePath, participantInteractionsPath,
   sharedMessagesPath, sharedFilesPath, sharedInitialWorkspacePath,
   sharedFinalWorkspacePath,
   participantsIndexSessionPath, participantsIndexProfilePath,
@@ -122,19 +122,60 @@ async function findOrCreateTeam(
   taskMeta: { category: string; difficulty: string },
   profile?: UserProfile,
 ): Promise<{ sessionId: string; pid: string; isNew: boolean }> {
+  // Resolve the joiner's pid up-front so we can dedup against teams that
+  // already contain this person (preventing the same human from filling
+  // 2 roles in one session).
+  const joinerPid = profile?.email ? await participantIdFromEmail(profile.email) : '';
+
   const snapshot = await get(ref(db, `teambench/waiting/${taskId}`));
 
   if (snapshot.exists()) {
     const waiting = snapshot.val() as Record<string, { sessionId: string; roles: Record<string, boolean> }>;
+    const STALE_THRESHOLD_MS = 30 * 60 * 1000;  // 30 min
+    const nowMs = Date.now();
+
     for (const [waitId, team] of Object.entries(waiting)) {
+      if (!team.sessionId) continue;
+      // (1) Skip + delete waiting entries whose session is missing or no
+      // longer in lobby phase (someone already advanced or cancelled it).
+      const sessSnap = await get(ref(db, `teambench/sessions/${team.sessionId}`));
+      if (!sessSnap.exists()) {
+        await set(ref(db, `teambench/waiting/${taskId}/${waitId}`), null);
+        continue;
+      }
+      const sess = sessSnap.val();
+      if (sess.phase !== 'lobby') {
+        await set(ref(db, `teambench/waiting/${taskId}/${waitId}`), null);
+        continue;
+      }
+      // (2) Skip + delete entries that have aged past the threshold (the
+      // tab was closed without going through leaveSession).
+      if (typeof sess.createdAt === 'number' && nowMs - sess.createdAt > STALE_THRESHOLD_MS) {
+        await set(ref(db, `teambench/waiting/${taskId}/${waitId}`), null);
+        continue;
+      }
+      // (3) Skip teams that already contain this person under a different
+      // role (legacy participants dict OR v2 participants index). Same
+      // human cannot fill 2 roles.
+      const legacyParts = (sess.participants || {}) as Record<string, { email?: string }>;
+      const sameHumanInLegacy = Object.values(legacyParts).some(
+        p => (p?.email || '').trim().toLowerCase() === (profile?.email || '').trim().toLowerCase()
+              && (profile?.email || '').trim() !== ''
+      );
+      let sameHumanInV2 = false;
+      if (joinerPid) {
+        const v2Snap = await get(ref(db, participantPath(taskId, 'team', team.sessionId, joinerPid)));
+        sameHumanInV2 = v2Snap.exists();
+      }
+      if (sameHumanInLegacy || sameHumanInV2) continue;
+
       if (!team.roles[role]) {
         await set(ref(db, `teambench/waiting/${taskId}/${waitId}/roles/${role}`), true);
         await set(ref(db, `teambench/sessions/${team.sessionId}/participants/${role}`), participantInfo(name, profile));
 
         // v2 mirror — additive, never blocks legacy behavior
-        const pid = profile?.email ? await participantIdFromEmail(profile.email) : '';
-        if (pid) {
-          await mirrorParticipantProfile(taskId, 'team', team.sessionId, pid, role, name, profile);
+        if (joinerPid) {
+          await mirrorParticipantProfile(taskId, 'team', team.sessionId, joinerPid, role, name, profile);
         }
 
         const updatedSnap = await get(ref(db, `teambench/waiting/${taskId}/${waitId}/roles`));
@@ -150,7 +191,7 @@ async function findOrCreateTeam(
           await safeWrite('meta-start', () =>
             update(ref(db, metaPath(taskId, 'team', team.sessionId)), startUpdate));
         }
-        return { sessionId: team.sessionId, pid, isNew: false };
+        return { sessionId: team.sessionId, pid: joinerPid, isNew: false };
       }
     }
   }
@@ -176,7 +217,7 @@ async function findOrCreateTeam(
   });
 
   // v2 mirror — additive
-  const pid = profile?.email ? await participantIdFromEmail(profile.email) : '';
+  const pid = joinerPid;
   if (pid) {
     await mirrorSessionMeta(taskId, 'team', sessionId, legacyPayload);
     await mirrorParticipantProfile(taskId, 'team', sessionId, pid, role, name, profile);
@@ -856,6 +897,23 @@ export function useFirebaseSession() {
           await safeWrite('cancel-meta', () =>
             update(ref(db, metaPath(t.taskId, m, sid)), cancelUpdate));
         }
+      }
+      // Team mode: if we leave while still in lobby, delete the matching
+      // waiting entry so future joiners don't see a ghost slot. Without
+      // this, every team-mode user who closes their tab during the wait
+      // pollutes teambench/waiting/{taskId} with a dead entry.
+      if (m === 'team') {
+        try {
+          const waitSnap = await get(ref(db, `teambench/waiting/${t?.taskId}`));
+          if (waitSnap.exists()) {
+            const waiting = waitSnap.val() as Record<string, { sessionId: string }>;
+            for (const [waitId, entry] of Object.entries(waiting)) {
+              if (entry.sessionId === sid) {
+                await set(ref(db, `teambench/waiting/${t?.taskId}/${waitId}`), null);
+              }
+            }
+          }
+        } catch { /* best-effort */ }
       }
       // Free the backend container slot (best-effort; works whether or not
       // the session ever had a container).
