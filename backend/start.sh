@@ -18,6 +18,18 @@ if [ ! -d "${SCRIPT_DIR}/venv" ]; then
     "${SCRIPT_DIR}/venv/bin/pip" install -r "${SCRIPT_DIR}/requirements.txt"
 fi
 
+# Load .env if present so OPENAI_API_KEY / GEMINI_API_KEY / OPENROUTER_API
+# / ANTHROPIC_API_KEY etc. land in the process environment. Without this
+# step start_hybrid 503s with "No LLM gateways configured" because
+# providers.model_pool.available_gateways() reads from os.environ.
+if [ -f "${SCRIPT_DIR}/.env" ]; then
+    echo "Loading ${SCRIPT_DIR}/.env"
+    set -o allexport
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/.env"
+    set +o allexport
+fi
+
 # Activate and run
 source "${SCRIPT_DIR}/venv/bin/pip" 2>/dev/null
 exec "${SCRIPT_DIR}/venv/bin/uvicorn" server:app \
