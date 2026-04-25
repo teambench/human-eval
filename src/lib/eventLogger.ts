@@ -1,8 +1,8 @@
 /**
  * Per-participant interaction event logger. Writes a curated taxonomy of
- * UI/lifecycle events to teambench/tasks/{taskId}/{mode}/sessions/{sid}/
- * participants/{pid}/interactions/, plus a separate raw-click stream to
- * .../interactionsRaw/.
+ * UI/lifecycle events to teambench_new/tasks/{taskId}/{mode}/sessions/
+ * {sid}/participants/{pid}/interactions/, plus a separate raw-click
+ * stream to .../interactionsRaw/.
  *
  * Use:
  *   - Wrap routed views in <EventLoggerProvider value={ctx}>

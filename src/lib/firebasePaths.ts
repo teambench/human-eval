@@ -2,8 +2,9 @@
  * Path builders for the new structured Firebase tree (additive — does not
  * replace teambench/sessions/* which the live UI still reads/writes).
  *
- * Tree shape:
- *   teambench/tasks/{taskId}/{mode}/sessions/{sessionId}/
+ * Tree shape (rooted at teambench_new so it is fully isolated from the
+ * legacy teambench/* tree — old test data stays where it is):
+ *   teambench_new/tasks/{taskId}/{mode}/sessions/{sessionId}/
  *     meta/                              session-level metadata
  *     participants/{pid}/
  *       profile/                         email, name, role, ...
@@ -19,14 +20,14 @@
  *       agentStatus/{role}               hybrid only — drives "thinking" badge
  *       aiTurns/{eventId}                hybrid only — full AI turn records
  *
- *   teambench/participants/{pid}/sessions/{sessionId}: {taskId, mode, role, ...}
+ *   teambench_new/participants/{pid}/sessions/{sessionId}: {taskId, mode, role, ...}
  *
  * Mode is kept as the literal SessionMode value (`oracle` is NOT renamed
  * to `solo`) to minimize blast radius.
  */
 import { SessionMode } from '../types';
 
-const ROOT = 'teambench';
+const ROOT = 'teambench_new';
 
 export function taskSessionPath(
   taskId: string, mode: SessionMode, sessionId: string,

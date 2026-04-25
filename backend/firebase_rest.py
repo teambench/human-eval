@@ -124,8 +124,12 @@ def write_file_echo(
 # These mirror src/lib/firebasePaths.ts on the frontend. All paths are
 # pure string builders; no I/O. The mode literal is preserved as-is
 # (no oracle->solo rename) to keep the legacy and new tree symmetric.
+#
+# Rooted at teambench_new (separate top-level node) so the new tree is
+# fully isolated from the legacy teambench/* data — old test logs stay
+# where they are without any migration.
 
-_ROOT_V2 = "teambench"
+_ROOT_V2 = "teambench_new"
 
 
 def task_session_path(task_id: str, mode: str, session_id: str, *parts: str) -> str:
