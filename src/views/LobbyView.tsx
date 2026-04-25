@@ -4,6 +4,10 @@ import { db } from '../firebase';
 import { Role, SessionMode, TaskConfig } from '../types';
 import { TASK_CATALOG, TaskEntry, DEMO_TASK } from '../data/taskCatalog';
 import { subscribeToUserSolved, SolvedByModeMap, statusFor, ModeStatus, loadSolvedFromLocal, subscribeToTaskStats, TaskStats } from '../lib/solvedTasks';
+import {
+  findJoinableTeam, getActiveSessionsForEmail, cancelOtherSession,
+  JoinablePeek, ActiveSessionRef,
+} from '../lib/lobbyChecks';
 
 // ── Types ──
 export interface UserProfile {
@@ -129,12 +133,21 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
 
   const profileValid = profile.name.trim() && profile.email.trim() && profile.expertise;
 
-  const handleJoin = () => {
-    if (!selectedTask || !selectedRole || !profileValid) return;
-    // Use DEMO_TASK only for the demo; all other tasks start empty and load
-    // files from the backend after session creation (generator-staged).
+  // Pre-join confirmation state. Two independent gates:
+  //   (1) activeSessionsWarning  — user has another active session somewhere.
+  //   (2) teamPeek               — team mode is about to attach to an existing
+  //                                waiting room; show roster first.
+  // rejectedTeamSessions accumulates "find a different team" choices so peek
+  // skips them on the next gate run.
+  const [activeSessionsWarning, setActiveSessionsWarning] = useState<ActiveSessionRef[] | null>(null);
+  const [teamPeek, setTeamPeek] = useState<JoinablePeek | null>(null);
+  const [rejectedTeamSessions, setRejectedTeamSessions] = useState<Set<string>>(new Set());
+  const [checkingPreJoin, setCheckingPreJoin] = useState(false);
+
+  function buildTaskConfig(): TaskConfig | null {
+    if (!selectedTask) return null;
     const isDemo = selectedTask.taskId === 'DEMO_api_fix';
-    const taskConfig: TaskConfig = isDemo
+    return isDemo
       ? { ...DEMO_TASK }
       : {
           taskId: selectedTask.taskId,
@@ -146,8 +159,88 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
           briefMd: `# ${selectedTask.displayName}\n\nLoading task from backend... See \`brief.md\` in /workspace.`,
           files: [],
         };
+  }
+
+  function commitJoin() {
+    const taskConfig = buildTaskConfig();
+    if (!taskConfig || !selectedRole) return;
     onJoin(taskConfig, selectedRole, mode || 'team', profile.name.trim(), profile);
+  }
+
+  // Run the two pre-join gates. `skipActiveCheck` true on re-entry from
+  // the active-sessions modal "Continue here" button. `extraRejected`
+  // applies a freshly-rejected sessionId before state propagation.
+  async function runPreJoinGates(skipActiveCheck = false, extraRejected: string[] = []) {
+    if (!selectedTask || !selectedRole || !profileValid) return;
+    setCheckingPreJoin(true);
+    try {
+      // Gate 1 — multi-session sanity check (all modes).
+      if (!skipActiveCheck) {
+        const active = await getActiveSessionsForEmail(profile.email);
+        if (active.length > 0) {
+          setActiveSessionsWarning(active);
+          return;
+        }
+      }
+      // Gate 2 — team-mode pre-entry confirmation, only if a real team is
+      // joinable. Solo and hybrid skip this gate entirely.
+      if (mode === 'team') {
+        const exclude = new Set([...rejectedTeamSessions, ...extraRejected]);
+        const peek = await findJoinableTeam(
+          selectedTask.taskId, selectedRole, profile.email, exclude,
+        );
+        if (peek && peek.participants.length > 0) {
+          setTeamPeek(peek);
+          return;
+        }
+      }
+      // No gate triggered → commit join.
+      commitJoin();
+    } finally {
+      setCheckingPreJoin(false);
+    }
+  }
+
+  const handleJoin = () => {
+    void runPreJoinGates();
   };
+
+  function handleActiveSessionsContinue() {
+    setActiveSessionsWarning(null);
+    void runPreJoinGates(/*skipActiveCheck=*/true);
+  }
+
+  function handleActiveSessionsCancel() {
+    setActiveSessionsWarning(null);
+  }
+
+  async function handleActiveSessionsLeaveAndContinue() {
+    const sessions = activeSessionsWarning || [];
+    setActiveSessionsWarning(null);
+    setCheckingPreJoin(true);
+    try {
+      for (const s of sessions) {
+        await cancelOtherSession(s);
+      }
+    } finally {
+      setCheckingPreJoin(false);
+    }
+    void runPreJoinGates(/*skipActiveCheck=*/true);
+  }
+
+  function handleTeamPeekConfirm() {
+    setTeamPeek(null);
+    commitJoin();
+  }
+
+  function handleTeamPeekReject() {
+    const rejected = teamPeek?.sessionId;
+    setTeamPeek(null);
+    if (rejected) {
+      setRejectedTeamSessions(prev => new Set([...prev, rejected]));
+    }
+    void runPreJoinGates(/*skipActiveCheck=*/true, rejected ? [rejected] : []);
+  }
 
   // ── Step: Waiting Room ──
   if (step === 'waiting' && waitingSessionId) {
@@ -172,6 +265,7 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
   }
 
   return (
+    <>
     <div style={{ minHeight: '100vh', background: '#11111b', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       {/* Top bar */}
       <div style={{
@@ -556,8 +650,117 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
         </div>
       </div>
     </div>
+
+    {/* ── Pre-join confirmation modals ───────────────────────────────── */}
+    {activeSessionsWarning && (
+      <ModalShell title="You already have an active session">
+        <p style={{ color: '#cdd6f4', fontSize: 14, marginBottom: 12 }}>
+          We see {activeSessionsWarning.length === 1 ? 'an active session' : `${activeSessionsWarning.length} active sessions`} in your account already. Continuing here will leave {activeSessionsWarning.length === 1 ? 'it' : 'them'} orphaned (the other tab will keep showing the lobby/task UI but won't be cleaned up).
+        </p>
+        <ul style={{ margin: '0 0 16px 16px', padding: 0, color: '#a6adc8', fontSize: 13 }}>
+          {activeSessionsWarning.map(s => (
+            <li key={s.sessionId} style={{ marginBottom: 6 }}>
+              <strong style={{ color: '#cdd6f4' }}>{s.taskId}</strong>
+              {' '}({s.mode}, role: {s.role}, status: {s.status})
+            </li>
+          ))}
+        </ul>
+        <p style={{ color: '#f9e2af', fontSize: 13, marginBottom: 16 }}>
+          Recommended: switch back to your existing tab and finish (or cancel) that session first.
+        </p>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+          <button onClick={handleActiveSessionsCancel} style={modalSecondaryBtnStyle}>
+            Cancel — go back to that session
+          </button>
+          <button onClick={handleActiveSessionsLeaveAndContinue} style={modalPrimaryBtnStyle}>
+            Leave that session and continue here
+          </button>
+          <button onClick={handleActiveSessionsContinue} style={modalDangerBtnStyle}>
+            Continue here anyway (leave orphan)
+          </button>
+        </div>
+      </ModalShell>
+    )}
+
+    {teamPeek && (
+      <ModalShell title="Join this team?">
+        <p style={{ color: '#cdd6f4', fontSize: 14, marginBottom: 12 }}>
+          You're about to join an existing team for{' '}
+          <strong>{teamPeek.taskId}</strong> as <strong>{selectedRole}</strong>:
+        </p>
+        <ul style={{ margin: '0 0 16px 16px', padding: 0, color: '#a6adc8', fontSize: 13 }}>
+          {teamPeek.participants.map(p => (
+            <li key={p.role} style={{ marginBottom: 6 }}>
+              <span style={{
+                display: 'inline-block', minWidth: 70, fontWeight: 600,
+                color: TEAM_ROLES.find(r => r.role === p.role)?.color || '#cdd6f4',
+                textTransform: 'capitalize',
+              }}>{p.role}</span>
+              <strong style={{ color: '#cdd6f4' }}>{p.name}</strong>
+              {p.institution && <span style={{ color: '#6c7086' }}> · {p.institution}</span>}
+            </li>
+          ))}
+        </ul>
+        <p style={{ color: '#6c7086', fontSize: 12, marginBottom: 16 }}>
+          If you'd rather not join this group, choose "Find a different team" — we'll create a fresh waiting room for you.
+        </p>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={handleTeamPeekReject} style={modalSecondaryBtnStyle}>Find a different team</button>
+          <button onClick={handleTeamPeekConfirm} style={modalPrimaryBtnStyle}>Join this team</button>
+        </div>
+      </ModalShell>
+    )}
+
+    {checkingPreJoin && !activeSessionsWarning && !teamPeek && (
+      <div style={{
+        position: 'fixed', inset: 0, background: 'rgba(17,17,27,0.7)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 9999,
+      }}>
+        <div style={{ color: '#cdd6f4', fontSize: 14 }}>Checking lobby state…</div>
+      </div>
+    )}
+    </>
   );
 }
+
+// ── Modal shared bits ────────────────────────────────────────────────────
+function ModalShell({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(17,17,27,0.85)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      zIndex: 10000, padding: 16,
+    }}>
+      <div style={{
+        background: '#1e1e2e', border: '1px solid #313244',
+        borderRadius: 12, padding: 24, maxWidth: 540, width: '100%',
+        boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+      }}>
+        <h3 style={{ margin: 0, marginBottom: 12, color: '#cdd6f4', fontSize: 17, fontWeight: 700 }}>
+          {title}
+        </h3>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const modalPrimaryBtnStyle: React.CSSProperties = {
+  padding: '8px 14px', background: '#10b981', color: '#11111b',
+  border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 700,
+  cursor: 'pointer',
+};
+const modalSecondaryBtnStyle: React.CSSProperties = {
+  padding: '8px 14px', background: '#313244', color: '#cdd6f4',
+  border: '1px solid #45475a', borderRadius: 6, fontSize: 13, fontWeight: 600,
+  cursor: 'pointer',
+};
+const modalDangerBtnStyle: React.CSSProperties = {
+  padding: '8px 14px', background: '#f38ba8', color: '#11111b',
+  border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 700,
+  cursor: 'pointer',
+};
 
 // ── Waiting Room (game-lobby style) ──
 function WaitingRoom({ sessionId, participants: initialParticipants, taskId, onCancel }: {
