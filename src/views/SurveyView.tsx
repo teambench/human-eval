@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { ref, set } from 'firebase/database';
 import { db } from '../firebase';
 import { Role, SessionMode } from '../types';
+import { participantSurveyPath } from '../lib/firebasePaths';
+import { useEventLogger } from '../lib/eventLogger';
 
 /**
  * CATME-lite Post-Task Survey
@@ -15,6 +17,7 @@ interface SurveyViewProps {
   taskId: string;
   role: Role;
   mode: SessionMode;
+  pid: string;   // empty string if email wasn't captured (no v2 mirror in that case)
   participants: Record<string, { name: string; joinedAt: number }>;
   onComplete: () => void;
 }
@@ -409,7 +412,8 @@ const HYBRID_AI_TEAMMATE: SoloItem[] = [
   },
 ];
 
-export function SurveyView({ sessionId, taskId, role, mode, participants, onComplete }: SurveyViewProps) {
+export function SurveyView({ sessionId, taskId, role, mode, pid, participants, onComplete }: SurveyViewProps) {
+  const log = useEventLogger();
   const isTeam = mode === 'team';
   const isHybrid = mode === 'hybrid';
 
@@ -606,6 +610,15 @@ export function SurveyView({ sessionId, taskId, role, mode, participants, onComp
     } catch (err) {
       console.error('Failed to save survey:', err);
     }
+    // v2 mirror — same survey payload also written to per-participant path
+    if (pid) {
+      try {
+        await set(ref(db, participantSurveyPath(taskId, mode, sessionId, pid)), surveyData);
+      } catch (err) {
+        console.warn('[v2 survey write]', err);
+      }
+    }
+    log('survey_submit', { instrumentVersion: surveyData.schema_version });
 
     setSubmitting(false);
     onComplete();

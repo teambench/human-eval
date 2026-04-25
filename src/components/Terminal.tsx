@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useLoggerContext } from '../lib/eventLogger';
 
 // Backend URL — read lazily per use so auto-detected / user-switched
 // region applies without a page reload. If we evaluated these at module
@@ -17,6 +18,10 @@ interface TerminalProps {
 }
 
 export function Terminal({ sessionId, taskId, files: initialFiles, disabled, onCommand }: TerminalProps) {
+  // Pull identify metadata from the EventLoggerProvider rather than threading
+  // 3 more props through every view → terminal callsite. The provider is set
+  // up in App.tsx whenever a session is active.
+  const loggerCtx = useLoggerContext();
   const termRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'no-session'>('no-session');
@@ -103,6 +108,20 @@ export function Terminal({ sessionId, taskId, files: initialFiles, disabled, onC
             setStatus('connected');
             reconnectAttempts = 0;
             if (reconnectAttempts === 0) term.clear();
+            // Identify handshake — must be the first message. Backend uses
+            // (taskId, mode, pid, role) to route stdin/stdout capture to the
+            // right participants/{pid}/interactions/ node. If loggerCtx is
+            // null (lobby/no-session), we just don't identify and capture
+            // stays disabled — terminal still works normally.
+            if (loggerCtx) {
+              ws.send(JSON.stringify({
+                type: 'identify',
+                taskId: loggerCtx.taskId,
+                mode: loggerCtx.mode,
+                pid: loggerCtx.pid,
+                role: loggerCtx.role,
+              }));
+            }
             ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
             // Keepalive: ping every 30s to prevent Cloudflare idle timeout
             pingInterval = setInterval(() => {

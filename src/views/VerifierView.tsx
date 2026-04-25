@@ -326,6 +326,7 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                 <button
                   key={tab}
                   onClick={() => {
+                    onLog('tab_switch', { view: 'verifier', from: activeTab, to: tab });
                     setActiveTab(tab);
                     if (tab === 'files' && !viewedWorkspace) setViewedWorkspace(true);
                   }}

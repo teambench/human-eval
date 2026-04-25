@@ -6,6 +6,14 @@ import { UserProfile } from '../views/LobbyView';
 
 import { getHostSync } from '../lib/regionRouter';
 import { groupForEmail, EXPERIMENT_ROUND } from '../lib/experimentGroup';
+import { participantIdFromEmail } from '../lib/participantId';
+import { recordEdit } from '../lib/fileDiff';
+import {
+  metaPath, participantProfilePath, participantInteractionsPath,
+  sharedMessagesPath, sharedFilesPath, sharedInitialWorkspacePath,
+  sharedFinalWorkspacePath,
+  participantsIndexSessionPath, participantsIndexProfilePath,
+} from '../lib/firebasePaths';
 // Lazy host lookup — evaluated per-call so a region switch (or async
 // auto-detect completing) takes effect without a full page reload.
 const BACKEND_API = () => `https://${import.meta.env.VITE_BACKEND_HOST || getHostSync()}`;
@@ -48,12 +56,72 @@ function participantInfo(name: string, profile?: UserProfile) {
   };
 }
 
+// ── New-tree mirror helpers (additive, never block legacy writes) ────────
+// All writes are best-effort; failures are logged but never thrown so they
+// can't break the live UX. Callers should resolve the participant id before
+// calling these — the legacy code path does not depend on pid existing.
+
+async function safeWrite(label: string, fn: () => Promise<void>): Promise<void> {
+  try { await fn(); } catch (err) { console.warn(`[v2 write ${label}]`, err); }
+}
+
+async function mirrorSessionMeta(
+  taskId: string, mode: SessionMode, sessionId: string,
+  legacyMeta: Record<string, unknown>,
+): Promise<void> {
+  await safeWrite('meta', () => set(ref(db, metaPath(taskId, mode, sessionId)), legacyMeta));
+}
+
+async function mirrorParticipantProfile(
+  taskId: string, mode: SessionMode, sessionId: string, pid: string,
+  role: Role, name: string, profile?: UserProfile,
+): Promise<void> {
+  const blob = {
+    ...participantInfo(name, profile),
+    role,
+    locale: navigator.language,
+    leftAt: null,
+  };
+  await safeWrite('profile', () =>
+    set(ref(db, participantProfilePath(taskId, mode, sessionId, pid)), blob));
+  await safeWrite('idx-session', () =>
+    set(ref(db, participantsIndexSessionPath(pid, sessionId)), {
+      taskId, mode, role, status: 'active', verdict: null, startTime: Date.now(),
+    }));
+  await safeWrite('idx-profile', () =>
+    set(ref(db, participantsIndexProfilePath(pid)), {
+      email: profile?.email || '',
+      name,
+      institution: profile?.institution || '',
+      expertise: profile?.expertise || '',
+      yearsExp: profile?.yearsExp || '',
+      updatedAt: Date.now(),
+    }));
+}
+
+function genEventId(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+async function pushInteraction(
+  taskId: string, mode: SessionMode, sessionId: string, pid: string,
+  type: string, payload: Record<string, unknown> = {},
+): Promise<void> {
+  const now = Date.now();
+  await safeWrite(`interaction:${type}`, () =>
+    push(
+      ref(db, participantInteractionsPath(taskId, mode, sessionId, pid)),
+      { id: genEventId(), ts: now, tsISO: new Date(now).toISOString(), type, ...payload },
+    ).then(() => {}),
+  );
+}
+
 // ── Matchmaking ──
 async function findOrCreateTeam(
   taskId: string, role: Role, name: string,
   taskMeta: { category: string; difficulty: string },
   profile?: UserProfile,
-): Promise<{ sessionId: string; isNew: boolean }> {
+): Promise<{ sessionId: string; pid: string; isNew: boolean }> {
   const snapshot = await get(ref(db, `teambench/waiting/${taskId}`));
 
   if (snapshot.exists()) {
@@ -63,17 +131,26 @@ async function findOrCreateTeam(
         await set(ref(db, `teambench/waiting/${taskId}/${waitId}/roles/${role}`), true);
         await set(ref(db, `teambench/sessions/${team.sessionId}/participants/${role}`), participantInfo(name, profile));
 
+        // v2 mirror — additive, never blocks legacy behavior
+        const pid = profile?.email ? await participantIdFromEmail(profile.email) : '';
+        if (pid) {
+          await mirrorParticipantProfile(taskId, 'team', team.sessionId, pid, role, name, profile);
+        }
+
         const updatedSnap = await get(ref(db, `teambench/waiting/${taskId}/${waitId}/roles`));
         const roles = updatedSnap.val();
         if (roles.planner && roles.executor && roles.verifier) {
           const startNow = Date.now();
           await set(ref(db, `teambench/waiting/${taskId}/${waitId}`), null);
-          await update(ref(db, `teambench/sessions/${team.sessionId}`), {
+          const startUpdate = {
             phase: 'planning', status: 'active',
             startTime: startNow, startTimeISO: new Date(startNow).toISOString(),
-          });
+          };
+          await update(ref(db, `teambench/sessions/${team.sessionId}`), startUpdate);
+          await safeWrite('meta-start', () =>
+            update(ref(db, metaPath(taskId, 'team', team.sessionId)), startUpdate));
         }
-        return { sessionId: team.sessionId, isNew: false };
+        return { sessionId: team.sessionId, pid, isNew: false };
       }
     }
   }
@@ -81,7 +158,7 @@ async function findOrCreateTeam(
   const sessionId = `${taskId}_${generateId()}`;
   const now = Date.now();
 
-  await set(ref(db, `teambench/sessions/${sessionId}`), {
+  const legacyPayload = {
     sessionId, taskId, mode: 'team',
     taskCategory: taskMeta.category, taskDifficulty: taskMeta.difficulty,
     experimentRound: EXPERIMENT_ROUND, experimentGroup: groupForEmail(profile?.email),
@@ -91,24 +168,32 @@ async function findOrCreateTeam(
     durationSeconds: null, phaseDurations: {},
     participants: { [role]: participantInfo(name, profile) },
     verdict: null, remediationCount: 0,
-  });
+  };
+  await set(ref(db, `teambench/sessions/${sessionId}`), legacyPayload);
 
   await set(push(ref(db, `teambench/waiting/${taskId}`)), {
     sessionId, roles: { [role]: true },
   });
 
-  return { sessionId, isNew: true };
+  // v2 mirror — additive
+  const pid = profile?.email ? await participantIdFromEmail(profile.email) : '';
+  if (pid) {
+    await mirrorSessionMeta(taskId, 'team', sessionId, legacyPayload);
+    await mirrorParticipantProfile(taskId, 'team', sessionId, pid, role, name, profile);
+  }
+
+  return { sessionId, pid, isNew: true };
 }
 
 async function createOracleSession(
   taskId: string, name: string,
   taskMeta: { category: string; difficulty: string },
   profile?: UserProfile,
-): Promise<string> {
+): Promise<{ sessionId: string; pid: string }> {
   const sessionId = `${taskId}_oracle_${generateId()}`;
   const now = Date.now();
 
-  await set(ref(db, `teambench/sessions/${sessionId}`), {
+  const legacyPayload = {
     sessionId, taskId, mode: 'oracle',
     taskCategory: taskMeta.category, taskDifficulty: taskMeta.difficulty,
     experimentRound: EXPERIMENT_ROUND, experimentGroup: groupForEmail(profile?.email),
@@ -118,9 +203,17 @@ async function createOracleSession(
     durationSeconds: null, phaseDurations: {},
     participants: { oracle: participantInfo(name, profile) },
     verdict: null, remediationCount: 0,
-  });
+  };
+  await set(ref(db, `teambench/sessions/${sessionId}`), legacyPayload);
 
-  return sessionId;
+  // v2 mirror — additive
+  const pid = profile?.email ? await participantIdFromEmail(profile.email) : '';
+  if (pid) {
+    await mirrorSessionMeta(taskId, 'oracle', sessionId, legacyPayload);
+    await mirrorParticipantProfile(taskId, 'oracle', sessionId, pid, 'oracle', name, profile);
+  }
+
+  return { sessionId, pid };
 }
 
 // Hybrid: 1 human (verifier) + 2 AI agents (planner, executor). No waiting
@@ -130,11 +223,11 @@ async function createHybridSession(
   taskId: string, name: string,
   taskMeta: { category: string; difficulty: string },
   profile?: UserProfile,
-): Promise<string> {
+): Promise<{ sessionId: string; pid: string }> {
   const sessionId = `${taskId}_hybrid_${generateId()}`;
   const now = Date.now();
 
-  await set(ref(db, `teambench/sessions/${sessionId}`), {
+  const legacyPayload = {
     sessionId, taskId, mode: 'hybrid',
     taskCategory: taskMeta.category, taskDifficulty: taskMeta.difficulty,
     experimentRound: EXPERIMENT_ROUND, experimentGroup: groupForEmail(profile?.email),
@@ -144,9 +237,17 @@ async function createHybridSession(
     durationSeconds: null, phaseDurations: {},
     participants: { verifier: participantInfo(name, profile) },
     verdict: null, remediationCount: 0,
-  });
+  };
+  await set(ref(db, `teambench/sessions/${sessionId}`), legacyPayload);
 
-  return sessionId;
+  // v2 mirror — additive
+  const pid = profile?.email ? await participantIdFromEmail(profile.email) : '';
+  if (pid) {
+    await mirrorSessionMeta(taskId, 'hybrid', sessionId, legacyPayload);
+    await mirrorParticipantProfile(taskId, 'hybrid', sessionId, pid, 'verifier', name, profile);
+  }
+
+  return { sessionId, pid };
 }
 
 // ── Main Hook ──
@@ -155,6 +256,7 @@ export function useFirebaseSession() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [role, setRole] = useState<Role | null>(null);
   const [mode, setMode] = useState<SessionMode>('team');
+  const [pid, setPid] = useState<string | null>(null);
   const [phase, setPhaseState] = useState<SessionState['phase']>('lobby');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [files, setFiles] = useState<FileEntry[]>([]);
@@ -351,6 +453,11 @@ export function useFirebaseSession() {
                 initData[key] = { path: f.path, content: f.content };
               }
               await set(initRef, initData);
+              // v2 mirror — same data under sharedArtifacts/initialWorkspace
+              if (task) {
+                await safeWrite('init-ws', () =>
+                  set(ref(db, sharedInitialWorkspacePath(task.taskId, mode, sessionId)), initData));
+              }
             }
           } catch {
             // best-effort — diff view gracefully degrades to plain view
@@ -420,6 +527,15 @@ export function useFirebaseSession() {
                 setSessionId(parsed.sessionId);
                 setRole(selectedRole);
                 addLog(parsed.sessionId, selectedRole, 'resume', { name });
+                // v2 mirror — resume event in interactions stream
+                if (profile?.email) {
+                  const resumePid = await participantIdFromEmail(profile.email);
+                  setPid(resumePid);
+                  await pushInteraction(
+                    selectedTask.taskId, selectedMode, parsed.sessionId, resumePid,
+                    'resume', { role: selectedRole, fromLocalStorageAt: savedAt },
+                  );
+                }
                 setJoining(false);
                 return;
               }
@@ -433,23 +549,24 @@ export function useFirebaseSession() {
       }
 
       let newSessionId: string;
+      let newPid = '';
       let isNew = false;
       const taskMeta = { category: selectedTask.category, difficulty: selectedTask.difficulty };
 
       if (selectedMode === 'oracle') {
-        newSessionId = await createOracleSession(selectedTask.taskId, name, taskMeta, profile);
-        isNew = true;
+        const r = await createOracleSession(selectedTask.taskId, name, taskMeta, profile);
+        newSessionId = r.sessionId; newPid = r.pid; isNew = true;
       } else if (selectedMode === 'hybrid') {
-        newSessionId = await createHybridSession(selectedTask.taskId, name, taskMeta, profile);
-        isNew = true;
+        const r = await createHybridSession(selectedTask.taskId, name, taskMeta, profile);
+        newSessionId = r.sessionId; newPid = r.pid; isNew = true;
       } else {
         const result = await findOrCreateTeam(selectedTask.taskId, selectedRole, name, taskMeta, profile);
-        newSessionId = result.sessionId;
-        isNew = result.isNew;
+        newSessionId = result.sessionId; newPid = result.pid; isNew = result.isNew;
       }
 
       setSessionId(newSessionId);
       setRole(selectedRole);
+      if (newPid) setPid(newPid);
       localStorage.setItem(storageKey, JSON.stringify({ sessionId: newSessionId, savedAt: Date.now() }));
 
       if (isNew) {
@@ -459,6 +576,9 @@ export function useFirebaseSession() {
           filesData[key] = { content: f.content, language: f.language };
         }
         await set(ref(db, `teambench/sessions/${newSessionId}/files`), filesData);
+        // v2 mirror — same file map under sharedArtifacts/files
+        await safeWrite('shared-files-init', () =>
+          set(ref(db, sharedFilesPath(selectedTask.taskId, selectedMode, newSessionId)), filesData));
       }
 
       // For hybrid, kick off the backend agent runners. We don't await the
@@ -485,6 +605,12 @@ export function useFirebaseSession() {
 
       if (isNew && selectedMode === 'team') setWaitingForTeam(true);
       addLog(newSessionId, selectedRole, 'join', { name, mode: selectedMode, profile });
+      // v2 mirror — join event in interactions stream
+      if (newPid) {
+        await pushInteraction(selectedTask.taskId, selectedMode, newSessionId, newPid, 'join', {
+          name, mode: selectedMode, role: selectedRole, viaResume: false,
+        });
+      }
     } catch (err) {
       console.error('Join error:', err);
     }
@@ -493,11 +619,18 @@ export function useFirebaseSession() {
 
   const sendMessage = useCallback(async (to: Role | 'all', content: string) => {
     if (!sessionId || !role) return;
-    await push(ref(db, `teambench/sessions/${sessionId}/messages`), {
-      id: generateId(), from: role, to, content, timestamp: Date.now(),
-    });
+    const msg = { id: generateId(), from: role, to, content, timestamp: Date.now() };
+    await push(ref(db, `teambench/sessions/${sessionId}/messages`), msg);
     addLog(sessionId, role, 'chat_send', { to, contentLength: content.length });
-  }, [sessionId, role]);
+    // v2 mirror — same message under sharedArtifacts/messages and chat_send interaction
+    if (task && pid) {
+      await safeWrite('shared-msg', () =>
+        push(ref(db, sharedMessagesPath(task.taskId, mode, sessionId)), msg).then(() => {}));
+      await pushInteraction(task.taskId, mode, sessionId, pid, 'chat_send', {
+        to, content, contentLength: content.length,
+      });
+    }
+  }, [sessionId, role, task, mode, pid]);
 
   const updateFile = useCallback(async (path: string, content: string) => {
     if (!sessionId || !role) return;
@@ -517,6 +650,26 @@ export function useFirebaseSession() {
     setFiles(prev => prev.map(f => f.path === path ? { ...f, content: clean } : f));
     await update(ref(db, `teambench/sessions/${sessionId}/files/${key}`), { content: clean });
     addLog(sessionId, role, 'file_edit', { path, contentLength: clean.length });
+    // v2 mirror — file content under sharedArtifacts/files/{key} + diff event in interactions
+    if (task && pid) {
+      await safeWrite('shared-file', () =>
+        update(ref(db, `${sharedFilesPath(task.taskId, mode, sessionId)}/${key}`), { content: clean }));
+      try {
+        const editRecord = await recordEdit(pid, path, clean);
+        if (editRecord.kind === 'full') {
+          await pushInteraction(task.taskId, mode, sessionId, pid, 'file_edit_full', {
+            path, content: editRecord.content, contentLength: editRecord.contentLength,
+            hash: editRecord.hash, truncated: editRecord.truncated,
+          });
+        } else {
+          await pushInteraction(task.taskId, mode, sessionId, pid, 'file_edit_diff', {
+            path, unifiedDiff: editRecord.unifiedDiff,
+            contentLength: editRecord.contentLength, hash: editRecord.hash,
+            prevHash: editRecord.prevHash, truncated: editRecord.truncated,
+          });
+        }
+      } catch (err) { console.warn('[v2 file_edit]', err); }
+    }
     // Sync edits to the container workspace so terminal + grader see them.
     setSaveStatus('saving');
     try {
@@ -531,7 +684,7 @@ export function useFirebaseSession() {
     } catch {
       setSaveStatus('error');
     }
-  }, [sessionId, role]);
+  }, [sessionId, role, task, mode, pid]);
 
   // Snapshot the container workspace into Firebase so post-hoc analysis
   // can read terminal-authored artifacts (results.json, report.md, budget
@@ -548,15 +701,21 @@ export function useFirebaseSession() {
         const key = f.path.replace(/[.\/\[\]#$]/g, '_');
         entries[key] = { content: f.content, language: f.language };
       }
-      await set(ref(db, `teambench/sessions/${sid}/finalWorkspace`), {
+      const finalPayload = {
         capturedAt: Date.now(),
         capturedAtISO: new Date().toISOString(),
         files: entries,
-      });
+      };
+      await set(ref(db, `teambench/sessions/${sid}/finalWorkspace`), finalPayload);
+      // v2 mirror
+      if (task) {
+        await safeWrite('final-ws', () =>
+          set(ref(db, sharedFinalWorkspacePath(task.taskId, mode, sid)), finalPayload));
+      }
     } catch {
       /* best-effort — grader result is still authoritative for scoring */
     }
-  }, []);
+  }, [task, mode]);
 
   const setPhase = useCallback(async (newPhase: SessionState['phase']) => {
     if (!sessionId || !role) return;
@@ -589,7 +748,15 @@ export function useFirebaseSession() {
 
     await update(ref(db, `teambench/sessions/${sessionId}`), updates);
     addLog(sessionId, role, 'phase_change', { from: phase, to: newPhase });
-  }, [sessionId, role, phase, startTime]);
+    // v2 mirror — same updates land in meta/, plus phase_change interaction event
+    if (task && pid) {
+      await safeWrite('meta-update', () =>
+        update(ref(db, metaPath(task.taskId, mode, sessionId)), updates));
+      await pushInteraction(task.taskId, mode, sessionId, pid, 'phase_change', {
+        from: phase, to: newPhase,
+      });
+    }
+  }, [sessionId, role, phase, startTime, task, mode, pid]);
 
   const getVisibleMessages = useCallback((): ChatMessage[] => {
     if (!role) return [];
@@ -639,10 +806,12 @@ export function useFirebaseSession() {
     const t = task;
     const r = role;
     const m = mode;
+    const p = pid;
     // Reset local state first so the UI navigates back instantly even if
     // network calls below stall.
     setSessionId(null);
     setRole(null);
+    setPid(null);
     setTask(null);
     setPhaseState('lobby');
     setMessages([]);
@@ -654,6 +823,10 @@ export function useFirebaseSession() {
     setSaveStatus('idle');
     if (sid && r) {
       addLog(sid, r, 'leave_session', { mode: m });
+      // v2 mirror — leave event in interactions
+      if (t && p) {
+        await pushInteraction(t.taskId, m, sid, p, 'leave', { reason: 'back', mode: m });
+      }
       // Drop the resume cookie so a future join starts fresh.
       if (t) {
         try { localStorage.removeItem(`teambench_session_${t.taskId}_${r}_${m}`); } catch {}
@@ -674,11 +847,15 @@ export function useFirebaseSession() {
       // Team / Hybrid mode: signal cancellation so the partner (or remaining
       // agents) sees it.
       if (m === 'team' || m === 'hybrid') {
+        const cancelUpdate = { phase: 'cancelled', status: 'cancelled', endTime: Date.now() };
         try {
-          await update(ref(db, `teambench/sessions/${sid}`), {
-            phase: 'cancelled', status: 'cancelled', endTime: Date.now(),
-          });
+          await update(ref(db, `teambench/sessions/${sid}`), cancelUpdate);
         } catch { /* best-effort */ }
+        // v2 mirror
+        if (t) {
+          await safeWrite('cancel-meta', () =>
+            update(ref(db, metaPath(t.taskId, m, sid)), cancelUpdate));
+        }
       }
       // Free the backend container slot (best-effort; works whether or not
       // the session ever had a container).
@@ -686,16 +863,20 @@ export function useFirebaseSession() {
         await fetch(`${BACKEND_API()}/api/session/${sid}`, { method: 'DELETE', keepalive: true });
       } catch { /* ignore */ }
     }
-  }, [sessionId, task, role, mode]);
+  }, [sessionId, task, role, mode, pid]);
 
   return {
-    task, sessionId, role, mode, phase,
+    task, sessionId, role, mode, pid, phase,
     messages: getVisibleMessages(), files: getVisibleFiles(),
     participants, startTime, endTime, joining, waitingForTeam,
     saveStatus,
     join, sendMessage, updateFile, setPhase, exportLogs, leaveSession,
     addLog: (action: string, detail?: Record<string, unknown>) => {
       if (sessionId && role) addLog(sessionId, role, action, detail ?? {});
+      // v2 mirror — every legacy addLog also lands in interactions
+      if (sessionId && role && task && pid) {
+        void pushInteraction(task.taskId, mode, sessionId, pid, action, detail ?? {});
+      }
     },
   };
 }

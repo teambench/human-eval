@@ -108,7 +108,7 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
             {(['spec', 'files'] as const).map(tab => (
               <button
                 key={tab}
-                onClick={() => setActiveTab(tab)}
+                onClick={() => { onLog('tab_switch', { view: 'planner', from: activeTab, to: tab }); setActiveTab(tab); }}
                 style={{
                   padding: '8px 20px', background: activeTab === tab ? '#1e1e2e' : 'transparent',
                   color: activeTab === tab ? '#cdd6f4' : '#888', border: 'none',

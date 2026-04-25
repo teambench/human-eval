@@ -1,21 +1,27 @@
 import { useCallback, useRef } from 'react';
+import { useEventLogger } from '../lib/eventLogger';
 
 interface ResizerProps {
   direction: 'horizontal' | 'vertical';
   onResize: (delta: number) => void;
+  panelId?: string;
 }
 
-export function Resizer({ direction, onResize }: ResizerProps) {
+export function Resizer({ direction, onResize, panelId }: ResizerProps) {
   const startPos = useRef(0);
+  const totalDelta = useRef(0);
+  const log = useEventLogger();
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     startPos.current = direction === 'horizontal' ? e.clientX : e.clientY;
+    totalDelta.current = 0;
 
     const handleMouseMove = (moveEvent: MouseEvent) => {
       const current = direction === 'horizontal' ? moveEvent.clientX : moveEvent.clientY;
       const delta = current - startPos.current;
       startPos.current = current;
+      totalDelta.current += delta;
       onResize(delta);
     };
 
@@ -24,13 +30,21 @@ export function Resizer({ direction, onResize }: ResizerProps) {
       document.removeEventListener('mouseup', handleMouseUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      // Emit one event per drag (commit), not per pixel.
+      if (Math.abs(totalDelta.current) >= 4) {
+        log('panel_resize', {
+          panel: panelId || 'unknown',
+          direction,
+          deltaPx: totalDelta.current,
+        });
+      }
     };
 
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
     document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize';
     document.body.style.userSelect = 'none';
-  }, [direction, onResize]);
+  }, [direction, onResize, panelId, log]);
 
   const isHoriz = direction === 'horizontal';
 

@@ -119,6 +119,49 @@ def write_file_echo(
     )
 
 
+# ── New structured-tree path helpers (additive — legacy session_path lives) ──
+#
+# These mirror src/lib/firebasePaths.ts on the frontend. All paths are
+# pure string builders; no I/O. The mode literal is preserved as-is
+# (no oracle->solo rename) to keep the legacy and new tree symmetric.
+
+_ROOT_V2 = "teambench"
+
+
+def task_session_path(task_id: str, mode: str, session_id: str, *parts: str) -> str:
+    return "/".join([_ROOT_V2, "tasks", task_id, mode, "sessions", session_id, *parts])
+
+
+def meta_path(task_id: str, mode: str, session_id: str, *parts: str) -> str:
+    return task_session_path(task_id, mode, session_id, "meta", *parts)
+
+
+def participant_path(task_id: str, mode: str, session_id: str, pid: str, *parts: str) -> str:
+    return task_session_path(task_id, mode, session_id, "participants", pid, *parts)
+
+
+def participant_profile_path(task_id: str, mode: str, session_id: str, pid: str) -> str:
+    return participant_path(task_id, mode, session_id, pid, "profile")
+
+
+def participant_interactions_path(
+    task_id: str, mode: str, session_id: str, pid: str, *parts: str,
+) -> str:
+    return participant_path(task_id, mode, session_id, pid, "interactions", *parts)
+
+
+def shared_artifacts_path(task_id: str, mode: str, session_id: str, *parts: str) -> str:
+    return task_session_path(task_id, mode, session_id, "sharedArtifacts", *parts)
+
+
+def participants_index_session_path(pid: str, session_id: str, *parts: str) -> str:
+    return "/".join([_ROOT_V2, "participants", pid, "sessions", session_id, *parts])
+
+
+def participants_index_profile_path(pid: str) -> str:
+    return f"{_ROOT_V2}/participants/{pid}/profile"
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 

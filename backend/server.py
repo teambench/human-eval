@@ -1041,6 +1041,38 @@ async def list_sessions():
     }
 
 
+_TERMINAL_SIGNAL_BYTES = {
+    "\x03": "SIGINT",
+    "\x1a": "SIGTSTP",
+    "\x04": "EOF",
+    "\t": "TAB",
+}
+
+
+def _envelope(event_type: str, payload: dict) -> dict:
+    import datetime as _dt
+    now_ms = int(time.time() * 1000)
+    return {
+        "id": fb._genid(),
+        "ts": now_ms,
+        "tsISO": _dt.datetime.fromtimestamp(now_ms / 1000.0, tz=_dt.timezone.utc).isoformat(),
+        "type": event_type,
+        **payload,
+    }
+
+
+def _push_interaction_sync(ctx: dict, event_type: str, payload: dict) -> None:
+    """Sync Firebase push — must be wrapped in asyncio.to_thread so the
+    PTY loop is never blocked on Firebase latency. Failures swallowed."""
+    try:
+        fb.push(
+            fb.participant_interactions_path(ctx["task_id"], ctx["mode"], ctx["session_id"], ctx["pid"]),
+            _envelope(event_type, payload),
+        )
+    except Exception as e:
+        print(f"[ws/capture] push {event_type} failed: {e}")
+
+
 @app.websocket("/ws/terminal/{session_id}")
 async def terminal_websocket(websocket: WebSocket, session_id: str):
     """WebSocket terminal — proxies stdin/stdout to Docker exec."""
@@ -1092,6 +1124,45 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
 
     stop_event = asyncio.Event()
 
+    # Per-connection capture state. None until the frontend sends an
+    # `identify` message containing taskId/mode/pid/role. If identify
+    # never arrives (e.g. stale frontend build), capture stays disabled
+    # but the terminal works normally — never sacrifice live UX.
+    capture_ctx: dict | None = None
+    stdin_buffer: list[str] = []
+    import collections as _coll
+    stdout_deque: _coll.deque = _coll.deque(maxlen=80)
+    stdout_carry = [""]               # incomplete trailing line between recv() chunks
+    total_stdout_lines = [0]
+    last_stdout_chunk_at = [0.0]
+    pending_idle_snapshot: list[asyncio.Task | None] = [None]
+
+    async def _emit(event_type: str, payload: dict) -> None:
+        if capture_ctx is None:
+            return
+        ctx = capture_ctx
+        await asyncio.to_thread(_push_interaction_sync, ctx, event_type, payload)
+
+    async def _emit_snapshot(trigger: str) -> None:
+        if capture_ctx is None:
+            return
+        await _emit("terminal_output_snapshot", {
+            "lastLines": list(stdout_deque)[-40:],
+            "totalLineCount": total_stdout_lines[0],
+            "trigger": trigger,
+        })
+
+    async def _idle_snapshot_task() -> None:
+        """Debounced: emit a snapshot 2s after the last stdout chunk."""
+        try:
+            while True:
+                await asyncio.sleep(2.0)
+                if time.time() - last_stdout_chunk_at[0] >= 2.0:
+                    await _emit_snapshot("idle_2s")
+                    return
+        except asyncio.CancelledError:
+            return
+
     await websocket.send_json({"type": "output", "data": "Connected to sandbox terminal.\r\n"})
 
     async def read_from_container():
@@ -1104,8 +1175,22 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
                     await websocket.send_json({"type": "output",
                         "data": "\r\n\x1b[31m[Shell exited — reload page]\x1b[0m\r\n"})
                     break
-                await websocket.send_json({"type": "output",
-                    "data": data.decode("utf-8", errors="replace")})
+                text = data.decode("utf-8", errors="replace")
+                # Feed the rolling stdout deque. Carry an incomplete trailing
+                # line across chunks so we don't double-count partial output.
+                if capture_ctx is not None:
+                    combined = stdout_carry[0] + text
+                    parts = combined.split("\n")
+                    stdout_carry[0] = parts[-1]
+                    for line in parts[:-1]:
+                        # Strip CR for clean lines (xterm sends \r\n).
+                        stdout_deque.append(line.rstrip("\r"))
+                        total_stdout_lines[0] += 1
+                    last_stdout_chunk_at[0] = time.time()
+                    # (Re)schedule the idle snapshot.
+                    if pending_idle_snapshot[0] is None or pending_idle_snapshot[0].done():
+                        pending_idle_snapshot[0] = asyncio.create_task(_idle_snapshot_task())
+                await websocket.send_json({"type": "output", "data": text})
         except Exception as e:
             print(f"[ws/read] {type(e).__name__}: {e}")
         finally:
@@ -1113,12 +1198,49 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
 
     async def write_to_container():
         """Pump WebSocket → container stdin. Handles ping/pong keepalive."""
+        nonlocal capture_ctx
         try:
             while not stop_event.is_set():
                 msg = await websocket.receive_text()
                 parsed = json.loads(msg)
                 t = parsed.get("type")
+                if t == "identify":
+                    # First-message handshake. Refuse re-identification so a
+                    # stale frontend can't relabel an in-flight session.
+                    if capture_ctx is None:
+                        try:
+                            capture_ctx = {
+                                "task_id": str(parsed["taskId"]),
+                                "mode": str(parsed["mode"]),
+                                "pid": str(parsed["pid"]),
+                                "role": str(parsed.get("role", "")),
+                                "session_id": session_id,
+                            }
+                        except (KeyError, TypeError) as e:
+                            print(f"[ws/identify] malformed: {e}")
+                    continue  # don't forward identify to the PTY
                 if t == "input":
+                    if capture_ctx is not None:
+                        for ch in parsed["data"]:
+                            if ch in _TERMINAL_SIGNAL_BYTES:
+                                asyncio.create_task(_emit("terminal_signal",
+                                    {"signal": _TERMINAL_SIGNAL_BYTES[ch]}))
+                                continue
+                            if ch in ("\r", "\n"):
+                                line = "".join(stdin_buffer).rstrip("\n").rstrip("\r")
+                                stdin_buffer.clear()
+                                if line:
+                                    asyncio.create_task(_emit("terminal_cmd", {"cmd": line[:50_000]}))
+                                # Always emit an immediate snapshot on Enter so we capture
+                                # whatever output the previous command produced before the
+                                # next prompt.
+                                asyncio.create_task(_emit_snapshot("enter"))
+                                continue
+                            if ch == "\x7f":  # backspace
+                                if stdin_buffer:
+                                    stdin_buffer.pop()
+                                continue
+                            stdin_buffer.append(ch)
                     try:
                         raw_sock.send(parsed["data"].encode("utf-8"))
                     except (BrokenPipeError, ConnectionResetError, OSError) as e:
@@ -1165,6 +1287,8 @@ async def terminal_websocket(websocket: WebSocket, session_id: str):
         for t in (reader, writer, keepalive):
             if not t.done():
                 t.cancel()
+        if pending_idle_snapshot[0] is not None and not pending_idle_snapshot[0].done():
+            pending_idle_snapshot[0].cancel()
         try:
             raw_sock.close()
         except Exception:

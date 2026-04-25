@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, ReactNode } from 'react';
 import { useFirebaseSession } from './hooks/useFirebaseSession';
 import { LobbyView } from './views/LobbyView';
 import { PlannerView } from './views/PlannerView';
@@ -9,15 +9,28 @@ import { CompletedView } from './views/CompletedView';
 import { SurveyView } from './views/SurveyView';
 import { registerSessionCleanup } from './components/Terminal';
 import { getRegion, getHostSync, setRegion, REGIONS, RegionId } from './lib/regionRouter';
+import { EventLoggerProvider, SessionTrackers, LoggerContextValue } from './lib/eventLogger';
 
 export default function App() {
   const {
-    task, sessionId, role, mode, phase,
+    task, sessionId, role, mode, pid, phase,
     messages, files, participants,
     startTime, endTime,
     joining, waitingForTeam, saveStatus,
     join, sendMessage, updateFile, setPhase, exportLogs, leaveSession, addLog,
   } = useFirebaseSession();
+
+  // Logger context — only meaningful once a session is fully joined. Idle/focus/raw-click
+  // trackers no-op while ctx is null (lobby, onboarding).
+  const loggerCtx: LoggerContextValue | null = (sessionId && role && task && pid)
+    ? { taskId: task.taskId, mode, sessionId, pid, role }
+    : null;
+  const wrap = (children: ReactNode) => (
+    <EventLoggerProvider value={loggerCtx}>
+      <SessionTrackers />
+      {children}
+    </EventLoggerProvider>
+  );
 
   // Confirmation wrapper: guards against accidental clicks on Back.
   // Team mode additionally warns about cancelling for teammates.
@@ -83,19 +96,20 @@ export default function App() {
   // Completed — show survey first, then completion screen
   if (phase === 'completed' && task && sessionId && role) {
     if (!surveyCompleted) {
-      return (
-      <>{regionBadge}
-        <SurveyView
-          sessionId={sessionId}
-          taskId={task.taskId}
-          role={role}
-          mode={mode}
-          participants={participants}
-          onComplete={() => setSurveyCompleted(true)}
-        /></>
+      return wrap(
+        <>{regionBadge}
+          <SurveyView
+            sessionId={sessionId}
+            taskId={task.taskId}
+            role={role}
+            mode={mode}
+            pid={pid || ''}
+            participants={participants}
+            onComplete={() => setSurveyCompleted(true)}
+          /></>
       );
     }
-    return (
+    return wrap(
       <>{regionBadge}<CompletedView
         taskId={task.taskId}
         startTime={startTime}
@@ -107,7 +121,7 @@ export default function App() {
 
   // Lobby / Waiting / Task selection
   if (!role || !task || phase === 'lobby') {
-    return (
+    return wrap(
       <>{regionBadge}<LobbyView
         onJoin={(selectedTask, selectedRole, selectedMode, name, profile) =>
           join(selectedTask, selectedRole, selectedMode, name, profile)
@@ -131,7 +145,7 @@ export default function App() {
   };
 
   if (role === 'oracle') {
-    return (
+    return wrap(
       <>{regionBadge}<OracleView
         session={session}
         files={files}
@@ -148,20 +162,20 @@ export default function App() {
 
   switch (role) {
     case 'planner':
-      return (
+      return wrap(
         <>{regionBadge}<PlannerView session={session} files={files} messages={messages}
           onSendMessage={onSend} onPhaseChange={setPhase} onLog={addLog}
           onLeave={confirmLeave} /></>
       );
     case 'executor':
-      return (
+      return wrap(
         <>{regionBadge}<ExecutorView session={session} files={files} messages={messages}
           onSendMessage={onSend} onUpdateFile={(p, c) => updateFile(p, c)}
           onPhaseChange={setPhase} onLog={addLog} onLeave={confirmLeave}
           saveStatus={saveStatus} /></>
       );
     case 'verifier':
-      return (
+      return wrap(
         <>{regionBadge}<VerifierView session={session} files={files} messages={messages}
           onSendMessage={onSend} onPhaseChange={setPhase} onLog={addLog}
           onLeave={confirmLeave} /></>

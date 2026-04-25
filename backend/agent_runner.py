@@ -159,6 +159,70 @@ def log_model_use(session_id: str, role: str, gateway: str, usage: dict[str, int
     )
 
 
+_AI_TURN_MAX_BYTES = 50_000
+
+
+def _truncate(s: str | None) -> tuple[str, bool]:
+    s = s or ""
+    if len(s) <= _AI_TURN_MAX_BYTES:
+        return s, False
+    return s[:_AI_TURN_MAX_BYTES], True
+
+
+def log_ai_turn(
+    session_id: str,
+    task_id: str,
+    mode: str,
+    role: str,
+    prompt_messages: list[dict[str, Any]],
+    response_text: str,
+    gateway: str,
+    usage: dict[str, int],
+    latency_ms: int | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
+) -> None:
+    """Mirror an AI turn into the new sharedArtifacts/aiTurns/ stream.
+
+    Additive — does NOT replace log_model_use. Captures the full prompt +
+    response + tool calls so post-hoc analysis can study how humans interact
+    with AI in hybrid mode (acceptance/rejection of suggestions, latency,
+    trust patterns).
+    """
+    # Flatten messages for storage; system + user content concatenated with
+    # role tags so analysis can split if needed.
+    prompt_blob = "\n\n".join(
+        f"[{m.get('role', '?')}] {m.get('content', '')}" for m in prompt_messages
+    )
+    prompt, prompt_truncated = _truncate(prompt_blob)
+    response, response_truncated = _truncate(response_text)
+    now_ms = int(time.time() * 1000)
+    iso = _iso(now_ms)
+    record = {
+        "id": fb._genid(),
+        "ts": now_ms,
+        "tsISO": iso,
+        "role": f"{role}_ai",
+        "model": gateway,
+        "tokensIn": usage.get("input_tokens") or usage.get("prompt_tokens") or 0,
+        "tokensOut": usage.get("output_tokens") or usage.get("completion_tokens") or 0,
+        "latencyMs": latency_ms or 0,
+        "prompt": prompt,
+        "promptTruncated": prompt_truncated,
+        "response": response,
+        "responseTruncated": response_truncated,
+        "toolCalls": tool_calls or [],
+    }
+    try:
+        fb.push(fb.shared_artifacts_path(task_id, mode, session_id, "aiTurns"), record)
+    except Exception as e:
+        log.warning("[v2 aiTurns push] %s", e)
+
+
+def _iso(ms: int) -> str:
+    import datetime as _dt
+    return _dt.datetime.fromtimestamp(ms / 1000.0, tz=_dt.timezone.utc).isoformat()
+
+
 # ── Task loading ─────────────────────────────────────────────────────────
 
 
@@ -303,6 +367,9 @@ def run_planner(session_id: str, task_id: str, ws_path: str) -> None:
     plan_text = resp.content.strip() or "(Planner produced no output.)"
     chat(session_id, "planner", plan_text)
     log_model_use(session_id, "planner", resp.gateway_id, resp.usage)
+    # v2 mirror — full turn record under sharedArtifacts/aiTurns
+    log_ai_turn(session_id, task_id, "hybrid", "planner",
+                messages, plan_text, resp.gateway_id, resp.usage)
     log.info("planner posted plan via %s", resp.gateway_id)
 
     time.sleep(2.0)
@@ -317,6 +384,7 @@ def run_planner(session_id: str, task_id: str, ws_path: str) -> None:
         brief="",
         max_replies=10,
         wall_clock_limit=WALL_CLOCK_LIMIT,
+        task_id=task_id,
     )
 
 
@@ -361,6 +429,7 @@ def _check_and_reply(
     brief: str,
     state: dict,
     max_replies: int = 10,
+    task_id: str | None = None,
 ) -> None:
     """One iteration of chat-response. Safe to call from any polling loop.
 
@@ -460,6 +529,10 @@ def _check_and_reply(
     reply = (resp.content or "").strip() or "(I don't have a good answer for that.)"
     chat(session_id, role, reply)
     log_model_use(session_id, role, resp.gateway_id, resp.usage)
+    # v2 mirror — chat reply turn into aiTurns/
+    if task_id:
+        log_ai_turn(session_id, task_id, "hybrid", role,
+                    messages, reply, resp.gateway_id, resp.usage)
     state["replies"] = state.get("replies", 0) + 1
 
 
@@ -471,6 +544,7 @@ def _chat_listen(
     max_replies: int,
     wall_clock_limit: float,
     state: dict | None = None,
+    task_id: str | None = None,
 ) -> None:
     """Stay alive after the main role loop, answering verifier questions.
 
@@ -504,7 +578,7 @@ def _chat_listen(
             log.info("%s: chat-listen terminal phase=%s", role, phase)
             return
 
-        _check_and_reply(session_id, role, spec, brief, state, max_replies=max_replies)
+        _check_and_reply(session_id, role, spec, brief, state, max_replies=max_replies, task_id=task_id)
         time.sleep(POLL_INTERVAL)
 
 
@@ -591,10 +665,17 @@ def _run_execution_turns(
         explanation, edits = parse_executor_output(body)
 
         applied: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
         for rel, content in edits:
             if write_file(ws_path, rel, content):
                 fb.write_file_echo(session_id, rel, content)
                 applied.append(rel)
+                tool_calls.append({
+                    "tool": "file_write",
+                    "path": rel,
+                    "contentLength": len(content),
+                    "ts": int(time.time() * 1000),
+                })
 
         summary = (explanation or "").strip() or "(no explanation)"
         if applied:
@@ -602,6 +683,10 @@ def _run_execution_turns(
         if done:
             summary += "\n\n✓ Marked DONE."
         chat(session_id, "executor", summary)
+        # v2 mirror — full turn record incl. file_write tool calls
+        log_ai_turn(session_id, task_id, "hybrid", "executor",
+                    messages, text, resp.gateway_id, resp.usage,
+                    tool_calls=tool_calls)
         log.info("executor turn %d: %d edits via %s (done=%s)",
                  turn_idx + 1, len(applied), resp.gateway_id, done)
 
@@ -747,7 +832,7 @@ def run_executor(session_id: str, task_id: str, ws_path: str) -> None:
                 return
 
             # Respond to any verifier Q&A while we wait.
-            _check_and_reply(session_id, "executor", wait_spec, wait_brief, executor_chat_state)
+            _check_and_reply(session_id, "executor", wait_spec, wait_brief, executor_chat_state, task_id=task_id)
             if executor_chat_state.get("last_activity", 0) > last_human_activity:
                 last_human_activity = executor_chat_state["last_activity"]
 
@@ -781,6 +866,7 @@ def run_executor(session_id: str, task_id: str, ws_path: str) -> None:
         max_replies=10,
         wall_clock_limit=WALL_CLOCK_LIMIT,
         state=executor_chat_state,
+        task_id=task_id,
     )
 
 
