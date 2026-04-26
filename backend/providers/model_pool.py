@@ -1,16 +1,25 @@
-"""Multi-gateway LLM cascade with health-based cooldown.
+"""Multi-tier LLM cascade with health-based cooldown.
 
-Cascade (per-call, in order):
-    1. gpt-5.4-mini via OpenAI direct
-    2. gpt-5.4-mini via OpenRouter
-    3. gemini-3-flash via Google direct
-    4. gemini-3-flash via OpenRouter
+Cascade is registered fresh on every call_llm() so new keys / model
+changes in .env take effect on the next call without restarting the
+process. Order is QUALITY+RELIABILITY first, COST/SCALE backups last:
 
-Each gateway gets 2 retries with exponential backoff before we advance to
-the next. A gateway that fails 3 consecutive times enters a 60s cooldown
-(skipped without even attempting a call).
+  1. Anthropic Claude (Sonnet → Haiku → Opus)         — primary
+  2. OpenAI direct (gpt-5.5-pro → gpt-4-0613 → gpt-4 → gpt-3.5-turbo)
+  3. Gemini direct, primary key (gemini-3-flash)
+  4. Gemini direct, all rotation keys (GEMINI_API_KEY_1..N)
+  5. Gemini direct, fallback model names on primary key
+  6. OpenRouter (mixed providers)                      — last resort
 
-Keys are read from env once at import time; never logged, never returned.
+Each gateway gets PER_GATEWAY_RETRIES with backoff before falling
+through. A gateway that fails FAIL_THRESHOLD times in a row enters a
+COOLDOWN_SECONDS skip window. Cooldown auto-clears after expiry so
+keys that were rate-limited briefly come back online.
+
+Provider redundancy is the design goal: a single dead key, a retired
+model, or an uninstalled SDK should never take the system down. Earlier
+incident: every gateway happened to be one of {dead-key, dead-model,
+missing-SDK} simultaneously, leaving zero working LLMs.
 """
 from __future__ import annotations
 
@@ -21,14 +30,49 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import gemini_native, openai_compat
+from . import anthropic_compat, gemini_native, openai_compat
 from .openai_compat import GatewayError
 
 log = logging.getLogger("hybrid.model_pool")
 
-# ── Gateway catalog ──────────────────────────────────────────────────────
-# Each entry is a self-contained callable that takes (messages, **kwargs)
-# and returns the normalized response dict (or raises GatewayError).
+# ── Model catalog ────────────────────────────────────────────────────────
+# Lists are tried IN ORDER. Add new models at the head, deprecate at tail.
+
+ANTHROPIC_MODELS = (
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+    "claude-opus-4-7",
+)
+
+OPENAI_MODELS = (
+    "gpt-5.5-pro-2026-04-23",
+    "gpt-4-0613",
+    "gpt-4",
+    "gpt-3.5-turbo",
+)
+
+GEMINI_PRIMARY_MODEL = "gemini-3-flash"
+# Fallback Gemini models tried only on the primary key (not rotated, since
+# they're a "model dead" backstop, not a "key dead" one).
+GEMINI_FALLBACK_MODELS = (
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash",
+)
+
+# OpenRouter is provider-of-providers. Cross-provider mixed catalog so
+# a single OpenRouter key activates fallbacks for all three primary
+# providers. Models use OpenRouter's provider/model naming.
+OPENROUTER_MODELS = (
+    "anthropic/claude-sonnet-4-6",
+    "openai/gpt-4o-mini",
+    "google/gemini-3-flash",
+    "anthropic/claude-haiku-4-5",
+)
+
+GEMINI_KEY_RANGE = range(1, 30)  # GEMINI_API_KEY_1..29 inclusive
+
+
+# ── Gateway registration ─────────────────────────────────────────────────
 
 
 @dataclass
@@ -39,82 +83,109 @@ class Gateway:
     required_env: tuple[str, ...]
 
 
+def _collect_gemini_keys() -> list[tuple[str, str]]:
+    """Return [(label, key), ...] for every GEMINI_API_KEY* env var present.
+
+    Label is 'primary' for the bare GEMINI_API_KEY, 'k1'..'kN' for the
+    numbered variants. Order is primary first, then numeric ascending.
+    """
+    out: list[tuple[str, str]] = []
+    primary = os.environ.get("GEMINI_API_KEY") or ""
+    if primary:
+        out.append(("primary", primary))
+    seen: set[str] = {primary} if primary else set()
+    for i in GEMINI_KEY_RANGE:
+        v = os.environ.get(f"GEMINI_API_KEY_{i}") or ""
+        if v and v not in seen:
+            out.append((f"k{i}", v))
+            seen.add(v)
+    return out
+
+
 def _load_gateways() -> list[Gateway]:
     """Build the cascade from available env vars; skip any missing creds.
 
-    We deliberately read env here (not at module import) so the backend
-    can start even if some keys are missing — only the gateways with
-    available keys are registered.
+    Closures capture key/model/gid via default-args to avoid the classic
+    late-binding trap (all closures sharing the loop variable's last value).
     """
     openai_key = os.environ.get("OPENAI_API_KEY") or ""
     openrouter_key = os.environ.get("OPENROUTER_API") or os.environ.get("OPENROUTER_API_KEY") or ""
-    gemini_key = os.environ.get("GEMINI_API_KEY") or ""
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY") or ""
+    gemini_keys = _collect_gemini_keys()
 
     gw: list[Gateway] = []
 
+    # 1. Anthropic — primary tier (highest reliability + quality).
+    if anthropic_key:
+        for model in ANTHROPIC_MODELS:
+            gid = f"anthropic/{model}"
+            gw.append(Gateway(
+                id=gid, model=model,
+                call=lambda messages, _key=anthropic_key, _model=model, _gid=gid, **kw:
+                    anthropic_compat.call(
+                        gateway_id=_gid, api_key=_key, model=_model,
+                        messages=messages, **kw,
+                    ),
+                required_env=("ANTHROPIC_API_KEY",),
+            ))
+
+    # 2. OpenAI direct — same key, walk model list (newest first).
     if openai_key:
-        gw.append(
-            Gateway(
-                id="openai/gpt-5.4-mini",
-                model="gpt-5.4-mini",
-                call=lambda messages, **kw: openai_compat.call(
-                    gateway_id="openai/gpt-5.4-mini",
-                    base_url=None,
-                    api_key=openai_key,
-                    model="gpt-5.4-mini",
-                    messages=messages,
-                    **kw,
-                ),
+        for model in OPENAI_MODELS:
+            gid = f"openai/{model}"
+            gw.append(Gateway(
+                id=gid, model=model,
+                call=lambda messages, _key=openai_key, _model=model, _gid=gid, **kw:
+                    openai_compat.call(
+                        gateway_id=_gid, base_url=None, api_key=_key,
+                        model=_model, messages=messages, **kw,
+                    ),
                 required_env=("OPENAI_API_KEY",),
-            )
-        )
-    if openrouter_key:
-        gw.append(
-            Gateway(
-                id="openrouter/openai/gpt-5.4-mini",
-                model="openai/gpt-5.4-mini",
-                call=lambda messages, **kw: openai_compat.call(
-                    gateway_id="openrouter/openai/gpt-5.4-mini",
-                    base_url="https://openrouter.ai/api/v1",
-                    api_key=openrouter_key,
-                    model="openai/gpt-5.4-mini",
-                    messages=messages,
-                    **kw,
+            ))
+
+    # 3. Gemini direct — primary key first, then rotation keys.
+    for key_label, key in gemini_keys:
+        gid = f"gemini/{GEMINI_PRIMARY_MODEL}#{key_label}"
+        gw.append(Gateway(
+            id=gid, model=GEMINI_PRIMARY_MODEL,
+            call=lambda messages, _key=key, _gid=gid, **kw:
+                gemini_native.call(
+                    gateway_id=_gid, api_key=_key, model=GEMINI_PRIMARY_MODEL,
+                    messages=messages, **kw,
                 ),
-                required_env=("OPENROUTER_API",),
-            )
-        )
-    if gemini_key:
-        gw.append(
-            Gateway(
-                id="gemini/gemini-3-flash",
-                model="gemini-3-flash",
-                call=lambda messages, **kw: gemini_native.call(
-                    gateway_id="gemini/gemini-3-flash",
-                    api_key=gemini_key,
-                    model="gemini-3-flash",
-                    messages=messages,
-                    **kw,
-                ),
+            required_env=("GEMINI_API_KEY",),
+        ))
+
+    # 4. Gemini fallback models on the PRIMARY key only — only fires if the
+    # whole gemini-3-flash family is broken. Cheap insurance.
+    if gemini_keys:
+        primary_key = gemini_keys[0][1]
+        for model in GEMINI_FALLBACK_MODELS:
+            gid = f"gemini/{model}"
+            gw.append(Gateway(
+                id=gid, model=model,
+                call=lambda messages, _key=primary_key, _model=model, _gid=gid, **kw:
+                    gemini_native.call(
+                        gateway_id=_gid, api_key=_key, model=_model,
+                        messages=messages, **kw,
+                    ),
                 required_env=("GEMINI_API_KEY",),
-            )
-        )
+            ))
+
+    # 5. OpenRouter — last resort, cross-provider redundancy.
     if openrouter_key:
-        gw.append(
-            Gateway(
-                id="openrouter/google/gemini-3-flash",
-                model="google/gemini-3-flash",
-                call=lambda messages, **kw: openai_compat.call(
-                    gateway_id="openrouter/google/gemini-3-flash",
-                    base_url="https://openrouter.ai/api/v1",
-                    api_key=openrouter_key,
-                    model="google/gemini-3-flash",
-                    messages=messages,
-                    **kw,
-                ),
+        for model in OPENROUTER_MODELS:
+            gid = f"openrouter/{model}"
+            gw.append(Gateway(
+                id=gid, model=model,
+                call=lambda messages, _key=openrouter_key, _model=model, _gid=gid, **kw:
+                    openai_compat.call(
+                        gateway_id=_gid, base_url="https://openrouter.ai/api/v1",
+                        api_key=_key, model=_model, messages=messages, **kw,
+                    ),
                 required_env=("OPENROUTER_API",),
-            )
-        )
+            ))
+
     return gw
 
 
@@ -132,8 +203,8 @@ _health_lock = threading.Lock()
 
 COOLDOWN_SECONDS = 60.0
 FAIL_THRESHOLD = 3
-PER_GATEWAY_RETRIES = 2
-BACKOFF_SECONDS = (1.0, 4.0)  # must be len == PER_GATEWAY_RETRIES
+PER_GATEWAY_RETRIES = 1     # was 2; with ~20 gateways we'd rather move on
+BACKOFF_SECONDS = (1.0,)    # one backoff per retry; len must == PER_GATEWAY_RETRIES
 
 
 def _on_success(gid: str) -> None:
@@ -170,7 +241,7 @@ def _is_cooling(gid: str) -> bool:
 @dataclass
 class LLMResponse:
     content: str
-    gateway_id: str  # which gateway served the call (for logging)
+    gateway_id: str
     usage: dict[str, int] = field(default_factory=dict)
     finish_reason: str = "stop"
 
@@ -187,7 +258,7 @@ def call_llm(
     if not gateways:
         raise RuntimeError(
             "No LLM gateways configured. Check env vars: "
-            "OPENAI_API_KEY, OPENROUTER_API, GEMINI_API_KEY."
+            "ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY (+ _1..N), OPENROUTER_API."
         )
 
     errors: list[str] = []
@@ -213,13 +284,14 @@ def call_llm(
                 )
             except GatewayError as e:
                 errors.append(f"{gw.id}:{e.reason}")
-                # Non-retriable (4xx auth/bad-request) — advance immediately.
+                # Non-retriable (4xx auth/bad-request/missing-SDK) — advance
+                # immediately so we don't waste backoff time on a permanent
+                # failure.
                 if not e.retriable or attempt == PER_GATEWAY_RETRIES:
                     _on_fail(gw.id)
                     break
                 time.sleep(BACKOFF_SECONDS[attempt])
 
-    # All gateways exhausted.
     raise RuntimeError(f"All LLM gateways failed: {', '.join(errors)}")
 
 
