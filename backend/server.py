@@ -1072,14 +1072,93 @@ async def grade_session(session_id: str):
                 except Exception as e:
                     print(f"[grade] failed to read {p}: {e}")
 
+        # Best-effort diagnostics: if the grader marked the run as failed,
+        # re-run a few language-appropriate verbose commands inside the
+        # container so the verifier can see WHICH compiler/test failure
+        # caused which checklist item to flip. Many task graders
+        # (intentionally) suppress subprocess stderr — without this pass
+        # the user only sees "C3 failed" with no underlying error text.
+        #
+        # Defensive: skipped on grader-pass; entirely wrapped in
+        # try/except so any failure here NEVER mutates the grade response
+        # the frontend already expects. Each command capped at 60s.
+        diagnostics: Optional[dict] = None
+        try:
+            score_failed = isinstance(score, dict) and score.get("pass") is False
+            if score_failed:
+                diagnostics = _run_grade_diagnostics(container)
+        except Exception as e:
+            print(f"[grade] diagnostics pass failed (non-fatal): {e}")
+            diagnostics = None
+
         return {
             "status": "graded",
             "exit_code": exit_code,
             "output": output[-2000:],
             "score": score,
+            "diagnostics": diagnostics,
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+def _run_grade_diagnostics(container) -> dict:
+    """Re-run common verbose commands to expose what the grader hid.
+
+    Detects language by scanning /workspace for marker files (go.mod for
+    Go, pyproject.toml/setup.py/pytest.ini/conftest.py for Python,
+    package.json for Node). Runs the equivalent verbose check, captures
+    last 4000 chars of stdout+stderr per command. Each command runs in
+    the container with a 60-second hard cap (timeout(1) wrapper).
+
+    Returns {language, commands: [{cmd, exit_code, output_tail}, ...]}.
+    Empty commands list if nothing detected. Never raises — caller wraps
+    in try/except as a second line of defense.
+    """
+    out: dict = {"language": None, "commands": []}
+
+    def _run(cmd: str) -> dict:
+        try:
+            # `timeout 60 bash -c '...'` so a runaway test never blocks
+            # the grade response forever.
+            r = container.exec_run(
+                ["bash", "-c", f"timeout 60 bash -c {json.dumps(cmd)} 2>&1 | tail -c 4000"],
+                workdir="/workspace",
+                environment={"PYTHONPATH": "/workspace"},
+            )
+            return {
+                "cmd": cmd,
+                "exit_code": r.exit_code,
+                "output_tail": r.output.decode("utf-8", errors="replace"),
+            }
+        except Exception as e:
+            return {"cmd": cmd, "exit_code": -1, "output_tail": f"<diagnostic exec failed: {e}>"}
+
+    # Detect language by probing for marker files. Cheap; one ls call.
+    try:
+        ls = container.exec_run(["ls", "/workspace"], workdir="/workspace")
+        files = (ls.output.decode("utf-8", errors="replace") or "").split()
+    except Exception:
+        files = []
+
+    if "go.mod" in files:
+        out["language"] = "go"
+        out["commands"].append(_run("go build ./..."))
+        out["commands"].append(_run("go vet ./..."))
+        out["commands"].append(_run("go test -v -timeout 30s ./..."))
+    elif "package.json" in files:
+        out["language"] = "node"
+        out["commands"].append(_run("npm test --silent || npx jest --no-coverage"))
+        out["commands"].append(_run("node -c $(find . -maxdepth 2 -name '*.js' | head -1)"))
+    elif any(m in files for m in ("pyproject.toml", "setup.py", "pytest.ini", "conftest.py")):
+        out["language"] = "python"
+        out["commands"].append(_run("python -m pytest -x -v --tb=short --no-header 2>&1 | tail -c 3000"))
+        out["commands"].append(_run("python -c 'import ast, glob; [ast.parse(open(f).read()) for f in glob.glob(\"**/*.py\", recursive=True) if \"venv\" not in f]; print(\"all .py files parse\")'"))
+    else:
+        # Unknown — skip rather than guess.
+        out["language"] = "unknown"
+
+    return out
 
 
 @app.post("/api/session/{session_id}/start-hybrid")

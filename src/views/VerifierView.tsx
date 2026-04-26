@@ -191,6 +191,11 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
           scoreDetail: sc,
           exit_code: typeof r?.exit_code === 'number' ? r.exit_code : null,
           output: r?.output ?? '',
+          // Verbose per-language re-runs ONLY when the grader marked
+          // the run as failed. Backend emits `diagnostics: null` on
+          // pass; keep that shape so analysis can rely on
+          // "diagnostics presence implies failure".
+          diagnostics: (r as any)?.diagnostics ?? null,
           error: r?.status === 'error' ? (r.output || 'grader error') : null,
           timestamp: Date.now(),
         };

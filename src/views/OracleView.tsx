@@ -126,6 +126,9 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
         score: partial,
         scoreDetail: sc,
         output: result?.output ?? '',
+        // Verbose per-language re-runs only when the grader marked the
+        // run as failed (backend emits null on pass).
+        diagnostics: (result as any)?.diagnostics ?? null,
         error: result?.status === 'error' ? (result.output || 'grader error') : null,
         timestamp: Date.now(),
       };
