@@ -39,24 +39,33 @@ log = logging.getLogger("hybrid.model_pool")
 # Lists are tried IN ORDER. Add new models at the head, deprecate at tail.
 
 ANTHROPIC_MODELS = (
-    "claude-sonnet-4-6",
+    "claude-sonnet-4-5-20250929",
     "claude-haiku-4-5-20251001",
-    "claude-opus-4-7",
+    "claude-opus-4-5-20251101",
 )
 
+# Mix of GPT-5 family (modern) + GPT-4 family (broad-availability backups).
+# openai_compat.call() auto-switches max_tokens→max_completion_tokens for
+# the GPT-5 family, so all of these work with the same call signature.
 OPENAI_MODELS = (
-    "gpt-5.5-pro-2026-04-23",
+    "gpt-5.4-mini-2026-03-17",
+    "gpt-5.4",
     "gpt-4-0613",
     "gpt-4",
     "gpt-3.5-turbo",
 )
 
-GEMINI_PRIMARY_MODEL = "gemini-3-flash"
+# `gemini-flash-latest` is the moving alias that the v1beta API resolves to
+# whatever the current best Gemini Flash is. Verified responding for the
+# primary key. Plain `gemini-3-flash` (without -preview) is NOT a valid
+# model id — it 404s.
+GEMINI_PRIMARY_MODEL = "gemini-flash-latest"
 # Fallback Gemini models tried only on the primary key (not rotated, since
 # they're a "model dead" backstop, not a "key dead" one).
 GEMINI_FALLBACK_MODELS = (
     "gemini-3-flash-preview",
-    "gemini-2.5-flash",
+    "gemini-flash-lite-latest",
+    "gemini-2.5-flash-lite",
 )
 
 # OpenRouter is provider-of-providers. Cross-provider mixed catalog so

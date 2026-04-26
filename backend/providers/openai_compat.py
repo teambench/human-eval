@@ -54,13 +54,23 @@ def call(
 
     client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
 
+    # GPT-5 family (and a few others) reject `max_tokens` and require
+    # `max_completion_tokens` instead. Detect by model-name prefix; the
+    # error otherwise is a hard 400 ("Unsupported parameter: 'max_tokens'
+    # is not supported with this model").
+    is_gpt5_family = model.startswith("gpt-5") or model.startswith("o1") or model.startswith("o3")
+    create_kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if is_gpt5_family:
+        create_kwargs["max_completion_tokens"] = max_tokens
+    else:
+        create_kwargs["max_tokens"] = max_tokens
+
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=messages,  # type: ignore[arg-type]
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        resp = client.chat.completions.create(**create_kwargs)  # type: ignore[arg-type]
     except RateLimitError:
         raise GatewayError(gateway_id, "rate_limited", retriable=True)
     except APITimeoutError:
