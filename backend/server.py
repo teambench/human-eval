@@ -80,6 +80,99 @@ if TEAMBENCH_ROOT not in sys.path:
 sessions: dict[str, dict] = {}
 docker_client = docker.from_env()
 
+# ── Session persistence ──────────────────────────────────────────────────
+# In-memory `sessions` dict gets snapshotted to disk after every mutation
+# and restored at startup. Without this, every uvicorn restart (e.g. to
+# pick up new code, an .env edit, a tunnel-URL change, etc.) wiped every
+# active participant's session, causing /grade calls and WS reconnects
+# to 404 with "Session not found". Containers themselves survive uvicorn
+# restart because we don't touch the docker daemon — only the in-memory
+# bookkeeping was lost.
+#
+# The persisted file is JSON; only fields that are JSON-safe ever land
+# in the sessions dict (container_id, workspace_dir, paths, task_id,
+# created_at). At startup we validate each entry by checking the
+# referenced container is still alive — dead containers are dropped.
+
+_SESSIONS_PERSIST_FILE = os.environ.get(
+    "SESSIONS_PERSIST_FILE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), ".sessions_state.json"),
+)
+_sessions_lock = threading.Lock()
+
+
+def _save_sessions() -> None:
+    """Atomic JSON dump of the sessions dict. Best-effort — never raise."""
+    try:
+        tmp = _SESSIONS_PERSIST_FILE + ".tmp"
+        with _sessions_lock:
+            payload = json.dumps({"sessions": sessions, "saved_at": time.time()}, indent=2)
+        with open(tmp, "w") as f:
+            f.write(payload)
+        os.replace(tmp, _SESSIONS_PERSIST_FILE)
+    except Exception as e:
+        print(f"[sessions persist] save failed: {e}")
+
+
+def _load_and_validate_sessions() -> None:
+    """At startup, restore sessions whose docker container is still alive.
+
+    Any session whose container is gone (Docker daemon restart, manual
+    docker rm, etc.) is silently dropped. The corresponding workspace
+    dir is also removed if present, since the session is unrecoverable.
+    """
+    if not os.path.exists(_SESSIONS_PERSIST_FILE):
+        return
+    try:
+        with open(_SESSIONS_PERSIST_FILE) as f:
+            raw = json.load(f) or {}
+        restored = (raw.get("sessions") or {}) if isinstance(raw, dict) else {}
+    except Exception as e:
+        print(f"[sessions persist] load failed: {e}")
+        return
+
+    alive = 0
+    dropped = 0
+    for sid, info in restored.items():
+        if not isinstance(info, dict):
+            dropped += 1
+            continue
+        cid = info.get("container_id")
+        if not cid:
+            dropped += 1
+            continue
+        try:
+            container = docker_client.containers.get(cid)
+            # If the container has actually exited, treat as dead too —
+            # we can't run /grade through a stopped container.
+            if container.status not in ("running", "created"):
+                try: container.remove(force=True)
+                except Exception: pass
+                ws = info.get("workspace_dir")
+                if ws and os.path.exists(ws):
+                    shutil.rmtree(ws, ignore_errors=True)
+                dropped += 1
+                continue
+        except docker.errors.NotFound:
+            ws = info.get("workspace_dir")
+            if ws and os.path.exists(ws):
+                shutil.rmtree(ws, ignore_errors=True)
+            dropped += 1
+            continue
+        except Exception as e:
+            print(f"[sessions persist] validate failed for {sid}: {e}")
+            dropped += 1
+            continue
+        sessions[sid] = info
+        alive += 1
+    print(f"[sessions persist] restored {alive} sessions, dropped {dropped} dead")
+    # Re-snapshot after pruning so the on-disk state matches memory.
+    _save_sessions()
+
+
+# Run restore at module import (before any handler accepts requests).
+_load_and_validate_sessions()
+
 
 _CONFTEST_SRC = (
     "import os, sys\n"
@@ -373,6 +466,7 @@ def cleanup_session(session_id: str):
     _stop_hybrid_agents(session_id)
 
     session = sessions.pop(session_id, None)
+    _save_sessions()  # persist removal so a restart doesn't resurrect the entry
     if not session:
         return
     try:
@@ -656,6 +750,7 @@ async def create_session(session_id: str, task_id: str = "DEMO_api_fix", body: C
         "grade_sh_path": stage_info.get("grade_sh", ""),
         "created_at": time.time(),
     }
+    _save_sessions()  # persist creation so the session survives a uvicorn restart
 
     # Run the task's setup.sh (installs task-specific deps like flask, pytest-flask).
     setup_output = ""
