@@ -99,6 +99,98 @@ async function mirrorParticipantProfile(
     }));
 }
 
+// Reconcile any participants present in the legacy session but missing from
+// the v2 tree. Happens when an earlier joiner had a stale browser tab whose
+// bundle predated the v2 mirror code — they wrote to legacy only, leaving
+// the v2 tree with a partial roster. Each subsequent fresh-bundle joiner
+// runs this reconciler and back-fills the gaps idempotently.
+//
+// Uses LEGACY profile data verbatim (joinedAt, userAgent, etc.) so we do
+// not leak the current browser's metadata into someone else's profile blob.
+async function reconcileV2ParticipantsFromLegacy(
+  taskId: string, mode: SessionMode, sessionId: string,
+  legacyParticipants: Record<string, {
+    name?: string; email?: string; institution?: string; expertise?: string;
+    yearsExp?: string; joinedAt?: number; userAgent?: string;
+    screenSize?: string; timezone?: string;
+  } | undefined>,
+): Promise<void> {
+  for (const [otherRole, legacyProfile] of Object.entries(legacyParticipants)) {
+    if (!legacyProfile) continue;
+    const otherEmail = (legacyProfile.email || '').trim();
+    if (!otherEmail) continue;
+    let otherPid = '';
+    try {
+      otherPid = await participantIdFromEmail(otherEmail);
+    } catch {
+      continue;
+    }
+    if (!otherPid) continue;
+
+    // Skip if v2 already has them.
+    try {
+      const existing = await get(ref(db, participantProfilePath(taskId, mode, sessionId, otherPid)));
+      if (existing.exists()) continue;
+    } catch {
+      continue; // best-effort read — skip on error
+    }
+
+    const blob = {
+      name: legacyProfile.name || '(unnamed)',
+      joinedAt: legacyProfile.joinedAt || 0,
+      email: otherEmail,
+      institution: legacyProfile.institution || '',
+      expertise: legacyProfile.expertise || '',
+      yearsExp: legacyProfile.yearsExp || '',
+      userAgent: legacyProfile.userAgent || '',
+      screenSize: legacyProfile.screenSize || '',
+      timezone: legacyProfile.timezone || '',
+      locale: '',
+      leftAt: null,
+      role: otherRole,
+      backfilledAt: Date.now(),  // marker: this profile was reconciled, not written by the participant themselves
+    };
+    await safeWrite('reconcile-profile', () =>
+      set(ref(db, participantProfilePath(taskId, mode, sessionId, otherPid)), blob));
+    await safeWrite('reconcile-idx-session', () =>
+      set(ref(db, participantsIndexSessionPath(otherPid, sessionId)), {
+        taskId, mode, role: otherRole,
+        status: 'active', verdict: null,
+        startTime: legacyProfile.joinedAt || Date.now(),
+        backfilledAt: Date.now(),
+      }));
+  }
+}
+
+// Reconcile a sparse v2 meta from the legacy session payload. If the v2
+// meta was first written by a partial update (e.g. meta-start by a 3rd
+// joiner) instead of the full mirrorSessionMeta from the creator, fields
+// like createdAt / taskCategory / experimentRound are missing. Use update
+// (not set) so we never overwrite progress fields that have advanced.
+async function reconcileV2MetaFromLegacy(
+  taskId: string, mode: SessionMode, sessionId: string,
+  legacySession: Record<string, unknown>,
+): Promise<void> {
+  // Only copy stable creation-time fields, not anything that could move
+  // (phase / status / endTime / verdict). Those land via setPhase mirror
+  // calls and we don't want to clobber a more-recent state.
+  const stable: Record<string, unknown> = {};
+  for (const k of [
+    'sessionId', 'taskId', 'mode',
+    'taskCategory', 'taskDifficulty',
+    'experimentRound', 'experimentGroup',
+    'createdAt', 'createdAtISO',
+    'startTime', 'startTimeISO',
+  ]) {
+    if (legacySession[k] !== undefined && legacySession[k] !== null) {
+      stable[k] = legacySession[k];
+    }
+  }
+  if (Object.keys(stable).length === 0) return;
+  await safeWrite('reconcile-meta', () =>
+    update(ref(db, metaPath(taskId, mode, sessionId)), stable));
+}
+
 function genEventId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
@@ -177,6 +269,20 @@ async function findOrCreateTeam(
         if (joinerPid) {
           await mirrorParticipantProfile(taskId, 'team', team.sessionId, joinerPid, role, name, profile);
         }
+
+        // Reconcile any earlier joiners whose v2 mirror failed (e.g. they
+        // had a stale browser tab loaded with a pre-v2 bundle). Backfills
+        // their profile from the LEGACY session data so the v2 tree is
+        // never structurally smaller than the legacy tree. Idempotent —
+        // skips any pid that already has a v2 profile.
+        const legacySess = sess as Record<string, unknown>;
+        const legacyParts = (legacySess.participants || {}) as Record<string, {
+          name?: string; email?: string; institution?: string; expertise?: string;
+          yearsExp?: string; joinedAt?: number; userAgent?: string;
+          screenSize?: string; timezone?: string;
+        }>;
+        await reconcileV2ParticipantsFromLegacy(taskId, 'team', team.sessionId, legacyParts);
+        await reconcileV2MetaFromLegacy(taskId, 'team', team.sessionId, legacySess);
 
         const updatedSnap = await get(ref(db, `teambench/waiting/${taskId}/${waitId}/roles`));
         const roles = updatedSnap.val();

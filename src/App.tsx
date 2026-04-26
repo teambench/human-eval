@@ -20,18 +20,6 @@ export default function App() {
     join, sendMessage, updateFile, setPhase, exportLogs, leaveSession, addLog,
   } = useFirebaseSession();
 
-  // Logger context — only meaningful once a session is fully joined. Idle/focus/raw-click
-  // trackers no-op while ctx is null (lobby, onboarding).
-  const loggerCtx: LoggerContextValue | null = (sessionId && role && task && pid)
-    ? { taskId: task.taskId, mode, sessionId, pid, role }
-    : null;
-  const wrap = (children: ReactNode) => (
-    <EventLoggerProvider value={loggerCtx}>
-      <SessionTrackers />
-      {children}
-    </EventLoggerProvider>
-  );
-
   // Confirmation wrapper: guards against accidental clicks on Back.
   // Team mode additionally warns about cancelling for teammates.
   const confirmLeave = () => {
@@ -50,6 +38,72 @@ export default function App() {
     if (!sessionId) return;
     return registerSessionCleanup(sessionId);
   }, [sessionId]);
+
+  // ── Stale-bundle detection ─────────────────────────────────────────────
+  // Every fresh page-load writes its build hash to localStorage. Any tab
+  // whose baked-in __BUILD_HASH__ is older than that stored hash is on a
+  // stale bundle (e.g. opened yesterday, never refreshed) — we want to
+  // surface this because stale tabs silently write incomplete data when
+  // they pre-date v2 logic. Soft warning only; never auto-reloads.
+  const [staleBundle, setStaleBundle] = useState(false);
+  useEffect(() => {
+    const KEY = 'teambench_build_hash_v1';
+    const my = __BUILD_HASH__;
+    const check = () => {
+      let stored: string | null = null;
+      try { stored = localStorage.getItem(KEY); } catch { /* ignore */ }
+      if (!stored || stored < my) {
+        // We're as fresh or fresher — claim the canonical value.
+        try { localStorage.setItem(KEY, my); } catch { /* ignore */ }
+        setStaleBundle(false);
+      } else if (stored > my) {
+        setStaleBundle(true);
+      }
+    };
+    check();
+    // Listen for cross-tab updates so that opening a fresher tab anywhere
+    // immediately surfaces the warning in this tab.
+    window.addEventListener('storage', check);
+    return () => window.removeEventListener('storage', check);
+  }, []);
+
+  const staleBundleBanner = staleBundle ? (
+    <div style={{
+      position: 'fixed', top: 0, left: 0, right: 0,
+      zIndex: 10001,
+      background: '#f9e2af', color: '#1e1e2e',
+      padding: '10px 16px', textAlign: 'center',
+      fontSize: 13, fontWeight: 600,
+      boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
+    }}>
+      <span>A newer build has been deployed. This tab is on an outdated version — please refresh before joining a session, or your data may not be fully captured.</span>
+      <button onClick={() => location.reload()} style={{
+        padding: '6px 14px', background: '#1e1e2e', color: '#f9e2af',
+        border: 'none', borderRadius: 4, cursor: 'pointer',
+        fontSize: 12, fontWeight: 700,
+      }}>Refresh now</button>
+      <button onClick={() => setStaleBundle(false)} title="Dismiss this warning"
+        style={{
+          padding: '6px 10px', background: 'transparent', color: '#1e1e2e',
+          border: '1px solid #1e1e2e', borderRadius: 4, cursor: 'pointer',
+          fontSize: 12,
+        }}>×</button>
+    </div>
+  ) : null;
+
+  // Logger context — only meaningful once a session is fully joined. Idle/focus/raw-click
+  // trackers no-op while ctx is null (lobby, onboarding).
+  const loggerCtx: LoggerContextValue | null = (sessionId && role && task && pid)
+    ? { taskId: task.taskId, mode, sessionId, pid, role }
+    : null;
+  const wrap = (children: ReactNode) => (
+    <EventLoggerProvider value={loggerCtx}>
+      <SessionTrackers />
+      {staleBundleBanner}
+      {children}
+    </EventLoggerProvider>
+  );
 
   // Kick off region auto-detect on first load. Most users never see the
   // picker; this just ensures the cached region is set so subsequent

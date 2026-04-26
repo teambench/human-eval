@@ -70,10 +70,18 @@ function loadPersistedProfile(): UserProfile {
   return { name: '', email: '', institution: '', expertise: '', yearsExp: '' };
 }
 
+// Same EMAIL_RE used by the runtime profileValid check below — kept at
+// module scope so the persisted-profile gate above the component can
+// share the same definition without duplication.
+const EMAIL_RE_GLOBAL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, participants }: LobbyViewProps) {
   const persistedProfile = loadPersistedProfile();
   const profileAlreadyValid =
-    persistedProfile.name.trim() && persistedProfile.email.trim() && persistedProfile.expertise;
+    persistedProfile.name.trim().length >= 2 &&
+    EMAIL_RE_GLOBAL.test(persistedProfile.email.trim()) &&
+    persistedProfile.institution.trim().length >= 2 &&
+    !!persistedProfile.expertise;
   // COUHES Exempt Category 2 requires an information sheet be presented to
   // participants even though signed consent is waived. We gate the flow on
   // a localStorage ack; returning participants skip once they've acknowledged.
@@ -131,7 +139,17 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
     if (waitingForTeam) setStep('waiting');
   }, [waitingForTeam]);
 
-  const profileValid = profile.name.trim() && profile.email.trim() && profile.expertise;
+  // Profile validation gate. Strict enough to block placeholder-style
+  // garbage profiles (name="a", email="a") that have polluted prior
+  // sessions and created unjoinable ghost waiting rooms. Email regex is
+  // intentionally lenient — accepts academic/corporate addresses like
+  // "first.last+tag@uni.edu.au" but requires the basic shape.
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const profileValid =
+    profile.name.trim().length >= 2 &&
+    EMAIL_RE.test(profile.email.trim()) &&
+    profile.institution.trim().length >= 2 &&
+    !!profile.expertise;
 
   // Pre-join confirmation state. Two independent gates:
   //   (1) activeSessionsWarning  — user has another active session somewhere.
@@ -387,6 +405,27 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                 />
               </div>
 
+              {/* Per-field validation hints — only shown when something is missing/invalid. */}
+              {(() => {
+                if (profileValid) return null;
+                const issues: string[] = [];
+                if (profile.name.trim().length < 2) issues.push('a real name (at least 2 chars)');
+                if (!EMAIL_RE_GLOBAL.test(profile.email.trim())) issues.push('a valid email (e.g. you@uni.edu)');
+                if (profile.institution.trim().length < 2) issues.push('your institution (at least 2 chars)');
+                if (!profile.expertise) issues.push('your expertise area');
+                if (issues.length === 0) return null;
+                return (
+                  <div style={{
+                    marginTop: 16, padding: '10px 14px',
+                    background: 'rgba(245, 158, 11, 0.08)',
+                    border: '1px solid rgba(245, 158, 11, 0.3)',
+                    borderRadius: 6, color: '#f9e2af', fontSize: 12,
+                  }}>
+                    Please add {issues.join(', ')} so we can credit your work and follow up.
+                  </div>
+                );
+              })()}
+
               <button
                 onClick={() => {
                   if (!profileValid) return;
@@ -396,7 +435,7 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                 }}
                 disabled={!profileValid}
                 style={{
-                  marginTop: 28, width: '100%', padding: '12px', background: profileValid ? '#89b4fa' : '#333',
+                  marginTop: 16, width: '100%', padding: '12px', background: profileValid ? '#89b4fa' : '#333',
                   color: profileValid ? '#000' : '#666', border: 'none', borderRadius: 8,
                   fontWeight: 700, fontSize: 15, cursor: profileValid ? 'pointer' : 'not-allowed',
                 }}
