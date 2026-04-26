@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { push, ref, set } from 'firebase/database';
 import { db } from '../firebase';
+import { sharedLastGradePath } from '../lib/firebasePaths';
 import { MarkdownViewer } from '../components/MarkdownViewer';
 import { FileTree } from '../components/FileTree';
 import { CodeEditor } from '../components/CodeEditor';
@@ -134,6 +135,14 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
         triggeredBy: 'oracle_submit',
         mode: 'oracle',
       });
+      // v2 mirror — sharedArtifacts/lastGrade so analysis on the new tree
+      // doesn't have to fall back to the legacy path. Best-effort.
+      try {
+        await set(
+          ref(db, sharedLastGradePath(session.taskConfig.taskId, 'oracle', session.sessionId)),
+          payload,
+        );
+      } catch (e) { console.warn('[v2 lastGrade]', e); }
     } catch (e) {
       console.warn('persist oracle grade failed', e);
     }

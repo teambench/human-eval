@@ -703,7 +703,7 @@ def _run_execution_turns(
         time.sleep(1.0)  # Let the human see each turn's output
 
 
-def _auto_grade(session_id: str) -> None:
+def _auto_grade(session_id: str, task_id: str | None = None) -> None:
     """Invoke the backend grader after DONE and mirror the result to Firebase.
 
     The Verifier sees the grader's stdout/score BEFORE submitting their
@@ -716,12 +716,27 @@ def _auto_grade(session_id: str) -> None:
     import httpx
     import os as _os
 
+    def _write_last_grade(payload: dict) -> None:
+        # Always write the legacy path the live UI subscribes to.
+        fb.set(fb.session_path(session_id, "lastGrade"), payload)
+        # v2 mirror — sharedArtifacts/lastGrade so analysis on the new tree
+        # has the grader output without having to fall back to legacy. Best-
+        # effort; never raise into the calling flow.
+        if task_id:
+            try:
+                fb.set(
+                    fb.shared_artifacts_path(task_id, "hybrid", session_id, "lastGrade"),
+                    payload,
+                )
+            except Exception as _e:
+                print(f"[v2 lastGrade hybrid] {_e}")
+
     try:
         backend_host = _os.environ.get("HYBRID_BACKEND_URL", "http://localhost:8444")
         with httpx.Client(timeout=180.0) as c:
             r = c.post(f"{backend_host}/api/session/{session_id}/grade")
             if r.status_code != 200:
-                fb.set(fb.session_path(session_id, "lastGrade"), {
+                _write_last_grade({
                     "ok": False,
                     "status": r.status_code,
                     "output": r.text[:4000],
@@ -744,7 +759,7 @@ def _auto_grade(session_id: str) -> None:
             # Fallback verdict from exit code if score didn't carry one.
             if not verdict:
                 verdict = "pass" if body.get("exit_code") == 0 else "fail"
-            fb.set(fb.session_path(session_id, "lastGrade"), {
+            _write_last_grade({
                 "ok": True,
                 "verdict": verdict,
                 "score": score_num,
@@ -754,7 +769,7 @@ def _auto_grade(session_id: str) -> None:
                 "timestamp": int(time.time() * 1000),
             })
     except Exception as e:
-        fb.set(fb.session_path(session_id, "lastGrade"), {
+        _write_last_grade({
             "ok": False,
             "error": type(e).__name__,
             "timestamp": int(time.time() * 1000),
@@ -807,7 +822,7 @@ def run_executor(session_id: str, task_id: str, ws_path: str) -> None:
         # The grader invokes the container's grade.sh which runs pytest +
         # any task-specific checks and returns stdout/stderr/verdict/score.
         log.info("executor: invoking auto-grade before verification")
-        _auto_grade(session_id)
+        _auto_grade(session_id, task_id=task_id)
 
         # Advance to verification.
         time.sleep(1.0)

@@ -25,6 +25,15 @@ from collections import deque
 from pathlib import Path
 from typing import Optional
 
+# Re-export firebase_rest under the short alias `fb` used by the WS terminal
+# capture helpers below. Without this import, every push throws
+# "name 'fb' is not defined" and terminal_cmd / terminal_signal /
+# terminal_output_snapshot are silently dropped — the bug that left
+# CR2_style_enforce_0a4velnb / k2szsq81 with zero terminal events despite
+# the participant actually using the terminal.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import firebase_rest as fb  # noqa: E402
+
 # Load API keys + Firebase URL from the canonical TeamBench .env BEFORE any
 # module that reads them. Keys stay in process env only; never logged, never
 # returned from any endpoint. The file path is configurable via TEAMBENCH_ENV_FILE.

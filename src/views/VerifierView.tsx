@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { onValue, push, ref, set } from 'firebase/database';
 import { DiffEditor } from '@monaco-editor/react';
 import { db } from '../firebase';
+import { sharedLastGradePath } from '../lib/firebasePaths';
 import { ChatPanel } from '../components/ChatPanel';
 import { MarkdownViewer } from '../components/MarkdownViewer';
 import { FileTree } from '../components/FileTree';
@@ -194,6 +195,13 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
           timestamp: Date.now(),
         };
         await set(ref(db, `teambench/sessions/${session.sessionId}/lastGrade`), payload);
+        // v2 mirror — sharedArtifacts/lastGrade for analysis on the new tree.
+        try {
+          await set(
+            ref(db, sharedLastGradePath(session.taskConfig.taskId, session.mode, session.sessionId)),
+            payload,
+          );
+        } catch (e) { console.warn('[v2 lastGrade]', e); }
         // Also append to /gradeHistory so grade runs across remediation loops
         // are preserved (lastGrade is overwritten on each run). Used by
         // post-hoc analysis to align verifier decisions with the exact grader
