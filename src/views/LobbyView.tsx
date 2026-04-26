@@ -99,9 +99,20 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
   // Solved / attempted map, keyed by taskId. Source of truth is Firebase at
   // teambench/users/{sanitized_email}/solved, with localStorage as an instant
   // cache so badges render immediately on page load.
-  const [userSolved, setUserSolved] = useState<SolvedByModeMap>(loadSolvedFromLocal());
+  // Per-email cache keyed paint. profileSeed (email at mount-time) drives
+  // the initial state; the effect re-subscribes whenever the live
+  // profile.email changes, and the subscribe cb writes to that user's
+  // own per-email cache only.
+  const [userSolved, setUserSolved] = useState<SolvedByModeMap>(
+    () => loadSolvedFromLocal(persistedProfile.email),
+  );
   useEffect(() => {
-    if (!profile.email?.trim()) return;
+    if (!profile.email?.trim()) {
+      setUserSolved({});  // clear stale badges if profile cleared/changed
+      return;
+    }
+    // Repaint instantly from THIS email's cache before Firebase resolves.
+    setUserSolved(loadSolvedFromLocal(profile.email));
     return subscribeToUserSolved(profile.email, setUserSolved);
   }, [profile.email]);
   const [selectedTask, setSelectedTask] = useState<TaskEntry | null>(null);

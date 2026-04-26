@@ -37,32 +37,50 @@ export function statusFor(rec?: SolvedRecord): ModeStatus {
   return 'not_started';
 }
 
-const LS_KEY = 'teambench_solved_v2';
-const LS_LEGACY_KEY = 'teambench_solved_v1';
+// Per-email localStorage cache. The previous global keys
+// (teambench_solved_v1 / _v2) were shared across every profile that ever
+// loaded the lobby on a browser, so switching profiles inherited stale
+// solved-task badges — exactly the "test1 already attempted" bug. v3 is
+// scoped per sanitized email so a new profile starts with an empty cache.
+const LS_KEY_BASE = 'teambench_solved_v3:';
+const LS_LEGACY_GLOBAL_KEYS = ['teambench_solved_v1', 'teambench_solved_v2'];
 
 // Firebase RTDB forbids `.` `$` `#` `[` `]` `/` in paths. Lowercase + replace.
 function sanitizeEmail(email: string): string {
   return (email || '').trim().toLowerCase().replace(/[.\/\[\]#$@]/g, '_');
 }
 
-function readLocal(): SolvedByModeMap {
+function lsKey(safeEmail: string): string | null {
+  return safeEmail ? `${LS_KEY_BASE}${safeEmail}` : null;
+}
+
+function readLocal(safeEmail: string): SolvedByModeMap {
+  const key = lsKey(safeEmail);
+  if (!key) return {};
   try {
-    const v2 = JSON.parse(localStorage.getItem(LS_KEY) || '{}') as SolvedByModeMap;
-    if (Object.keys(v2).length > 0) return v2;
-    // Migrate v1 → v2 (old flat records were Oracle-only).
-    const v1 = JSON.parse(localStorage.getItem(LS_LEGACY_KEY) || '{}') as Record<string, SolvedRecord>;
-    const out: SolvedByModeMap = {};
-    for (const [tid, rec] of Object.entries(v1)) {
-      out[tid] = { oracle: rec };
-    }
-    return out;
+    return JSON.parse(localStorage.getItem(key) || '{}') as SolvedByModeMap;
   } catch {
     return {};
   }
 }
 
-function writeLocal(store: SolvedByModeMap) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(store)); } catch { /* quota */ }
+function writeLocal(safeEmail: string, store: SolvedByModeMap): void {
+  const key = lsKey(safeEmail);
+  if (!key) return;
+  try { localStorage.setItem(key, JSON.stringify(store)); } catch { /* quota */ }
+}
+
+// One-shot: drop the cross-user global caches the first time this module
+// loads in a tab. Any per-email data already migrated lives under v3 keys
+// and is unaffected; any badges that were "stuck" because of v2 will
+// vanish on next paint, then rehydrate from Firebase if real.
+let _legacyCleared = false;
+function clearLegacyGlobalCacheOnce(): void {
+  if (_legacyCleared) return;
+  _legacyCleared = true;
+  for (const k of LS_LEGACY_GLOBAL_KEYS) {
+    try { localStorage.removeItem(k); } catch { /* ignore */ }
+  }
 }
 
 function mergeRecord(prev: SolvedRecord | undefined, partial: number, pass: boolean): SolvedRecord {
@@ -87,13 +105,17 @@ export async function recordTaskAttempt(
   pass: boolean,
 ) {
   const safeEmail = sanitizeEmail(email);
+  clearLegacyGlobalCacheOnce();
 
-  // 1) Local cache update — immediate.
-  const local = readLocal();
-  const prevByMode = local[taskId] || {};
-  prevByMode[mode] = mergeRecord(prevByMode[mode], partial, pass);
-  local[taskId] = prevByMode;
-  writeLocal(local);
+  // 1) Local cache update — immediate. Per-email so we don't pollute the
+  // next profile that uses this browser.
+  if (safeEmail) {
+    const local = readLocal(safeEmail);
+    const prevByMode = local[taskId] || {};
+    prevByMode[mode] = mergeRecord(prevByMode[mode], partial, pass);
+    local[taskId] = prevByMode;
+    writeLocal(safeEmail, local);
+  }
 
   // 2) Firebase write under the new per-mode path.
   if (!safeEmail) return;
@@ -162,13 +184,16 @@ export function subscribeToUserSolved(
   email: string,
   cb: (solved: SolvedByModeMap) => void,
 ): () => void {
+  clearLegacyGlobalCacheOnce();
   const safeEmail = sanitizeEmail(email);
   if (!safeEmail) {
-    cb(readLocal());
+    // No profile yet — show no badges. Critically: do NOT fall back to a
+    // shared cache here, that's how stale data leaked to fresh profiles.
+    cb({});
     return () => {};
   }
 
-  cb(readLocal()); // paint instantly from cache
+  cb(readLocal(safeEmail)); // paint instantly from THIS user's cache
 
   // Track partial state from both subscriptions and merge.
   let modal: SolvedByModeMap = {};
@@ -185,12 +210,11 @@ export function subscribeToUserSolved(
       out[tid] = out[tid] || {};
       if (!out[tid].oracle) out[tid].oracle = rec;
     }
-    // Merge with localStorage (keep local-only entries).
-    const local = readLocal();
-    for (const [tid, byMode] of Object.entries(local)) {
-      out[tid] = { ...(byMode as any), ...(out[tid] || {}) };
-    }
-    writeLocal(out);
+    // Persist this user's per-email cache (Firebase is source-of-truth;
+    // the cache is for instant render on next visit). Do NOT merge in
+    // any localStorage that didn't come from this email — that was the
+    // source of the cross-profile leak.
+    writeLocal(safeEmail, out);
     cb(out);
   };
 
@@ -206,6 +230,8 @@ export function subscribeToUserSolved(
   return () => { unsubNew(); unsubLegacy(); };
 }
 
-export function loadSolvedFromLocal(): SolvedByModeMap {
-  return readLocal();
+/** Per-email instant cache for first-paint before the subscription resolves. */
+export function loadSolvedFromLocal(email: string): SolvedByModeMap {
+  clearLegacyGlobalCacheOnce();
+  return readLocal(sanitizeEmail(email));
 }
