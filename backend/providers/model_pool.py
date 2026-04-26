@@ -72,10 +72,18 @@ GEMINI_FALLBACK_MODELS = (
 # a single OpenRouter key activates fallbacks for all three primary
 # providers. Models use OpenRouter's provider/model naming.
 OPENROUTER_MODELS = (
-    "anthropic/claude-sonnet-4-6",
+    # Mirror the OpenAI direct fleet via OpenRouter so a dead OpenAI direct
+    # key still has a path through OpenRouter (and vice versa). User asked
+    # for gpt-5.4-mini via OpenRouter as a backup.
+    "openai/gpt-5.4-mini",
+    "openai/gpt-5.4",
     "openai/gpt-4o-mini",
-    "google/gemini-3-flash",
-    "anthropic/claude-haiku-4-5",
+    "openai/gpt-4-turbo",
+    # Cross-provider fallbacks so one key gives access to all 3 ecosystems.
+    "anthropic/claude-sonnet-4-5-20250929",
+    "anthropic/claude-haiku-4-5-20251001",
+    "google/gemini-flash-latest",
+    "google/gemini-2.5-flash",
 )
 
 GEMINI_KEY_RANGE = range(1, 30)  # GEMINI_API_KEY_1..29 inclusive

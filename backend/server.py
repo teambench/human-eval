@@ -401,6 +401,10 @@ def cleanup_session(session_id: str):
 
 HYBRID_MAX_SESSIONS = int(os.environ.get("HYBRID_MAX_SESSIONS", "5"))
 HYBRID_RATE_WINDOW_S = int(os.environ.get("HYBRID_RATE_WINDOW_S", "3600"))
+# Per-(task_id, client_ip) max within the window. Default 1 = old behavior
+# (anti-abuse). Bump for active testing where the same admin needs to
+# launch multiple hybrid sessions of the same task in quick succession.
+HYBRID_RATE_MAX = int(os.environ.get("HYBRID_RATE_MAX", "1"))
 
 # sid -> list of subprocess.Popen (one per agent role)
 hybrid_agents: dict[str, list[subprocess.Popen]] = {}
@@ -420,7 +424,7 @@ def _hybrid_rate_allow(task_id: str, client_ip: str) -> bool:
         q = hybrid_rate_state.setdefault(key, deque())
         while q and q[0] < cutoff:
             q.popleft()
-        if len(q) >= 1:  # 1 session per task per IP per window
+        if len(q) >= HYBRID_RATE_MAX:  # configurable; default 1 per task per IP per window
             return False
         q.append(now)
         return True
