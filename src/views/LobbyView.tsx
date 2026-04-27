@@ -367,11 +367,6 @@ export function LobbyView({ onJoin, joining, waitingForTeam, waitingSessionId, p
                   For questions about your rights as a research participant, contact MIT COUHES at
                   <em> couhes@mit.edu</em> or +1 (617) 253-6787.
                 </p>
-                <p style={{ margin: '12px 0 0', color: '#f9e2af', fontSize: 12 }}>
-                  <em>This is a placeholder — replace with the exact text approved by COUHES once the
-                  amendment is finalized. Bump CONSENT_KEY to "v2" to force all returning participants
-                  to re-acknowledge.</em>
-                </p>
               </div>
 
               <button
