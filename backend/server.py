@@ -507,6 +507,38 @@ hybrid_rate_state: dict[tuple[str, str], deque] = {}
 _hybrid_lock = threading.Lock()
 
 
+def _detect_self_port() -> int:
+    """Best-effort detection of THIS uvicorn's listening port.
+
+    Used to seed HYBRID_BACKEND_URL when we spawn agent_runner subprocesses,
+    so the agent's /grade callback hits the SAME backend that spawned it
+    (and therefore the SAME `sessions[]` dict that holds the session).
+    Without this, deployments with multiple uvicorns on the same host
+    (e.g. our droplets running both 8443 and 8444) silently broke hybrid:
+    the 8443 backend would spawn an agent, the agent would call default
+    localhost:8444, and the 8444 process would 404 because the session
+    isn't in its dict — surfacing as "session_unavailable" in the
+    verifier's grader pane.
+    """
+    try:
+        argv = sys.argv
+        for i, arg in enumerate(argv):
+            if arg == "--port" and i + 1 < len(argv):
+                return int(argv[i + 1])
+            if arg.startswith("--port="):
+                return int(arg.split("=", 1)[1])
+    except Exception:
+        pass
+    # Fallback: env override, then the historical default.
+    try:
+        return int(os.environ.get("BACKEND_PORT", "8444"))
+    except ValueError:
+        return 8444
+
+
+_SELF_PORT = _detect_self_port()
+
+
 def _hybrid_rate_allow(task_id: str, client_ip: str) -> bool:
     """Per-IP-per-task rate limit. Drops records outside the window."""
     if not client_ip:
@@ -598,6 +630,12 @@ def _start_hybrid_agents(session_id: str, task_id: str) -> None:
     log_dir = os.environ.get("HYBRID_LOG_DIR", "/tmp/teambench_hybrid_logs")
     os.makedirs(log_dir, exist_ok=True)
 
+    # Tell the agent which backend to call back to. Without this, the
+    # agent's HYBRID_BACKEND_URL default (localhost:8444) would point to a
+    # SIBLING uvicorn on the same host that doesn't know this session.
+    agent_env = os.environ.copy()
+    agent_env["HYBRID_BACKEND_URL"] = f"http://localhost:{_SELF_PORT}"
+
     procs: list[subprocess.Popen] = []
     for role in ("planner", "executor"):
         log_path = os.path.join(log_dir, f"{session_id}_{role}.log")
@@ -610,7 +648,7 @@ def _start_hybrid_agents(session_id: str, task_id: str) -> None:
                 "--task-id", task_id,
                 "--workspace-path", ws_path,
             ],
-            env=os.environ.copy(),
+            env=agent_env,
             stdout=lf,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
