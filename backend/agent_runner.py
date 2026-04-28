@@ -111,6 +111,14 @@ You receive a plan from the Planner, the full task spec, and the current
 workspace. You modify files across multiple turns until the task is done.
 A human VERIFIER will grade your final work.
 
+The harness auto-runs the project's test command (e.g. `pytest -x` for
+python, `go test ./...` for go, `npm test` for node) after each turn in
+which you wrote files, and posts the result to the verifier's chat AND
+prepends it to your next prompt as a "Tests after your previous turn"
+section. Use those results to iterate on failures before marking DONE.
+Tasks without a recognized test framework (e.g. Dockerfile-only) get
+no auto-run — that's expected, not a bug.
+
 Output format each turn (STRICT):
 
   1 or 2 plain-text sentences explaining what this turn does.
@@ -427,8 +435,11 @@ def _chat_system_for(role: str) -> str:
             "You are the EXECUTOR. You made the file edits the verifier is reviewing. "
             "Speak in FIRST PERSON about YOUR work — e.g. \"I edited app/routes.py to …\". "
             "Do NOT refer to yourself in the third person; do NOT say \"the executor did X\". "
-            "You don't have a terminal log; you can only describe what you remember doing "
-            "based on your prior turns in chat."
+            "If the recent chat history shows messages starting with '🧪 Auto-ran tests', "
+            "those ARE the tests the harness ran on your edits — reference them honestly "
+            "(e.g. 'Yes, the harness ran pytest -x and it failed at test_X — I then …'). "
+            "If no such messages appear, no test framework was detected for this task "
+            "(e.g. Dockerfile-only) — say so plainly rather than fabricating a test run."
         )
     return f"""You are an AI teammate in a collaborative coding task. {identity}
 The human VERIFIER is asking you a question in chat. Respond in 2–4 sentences,
@@ -793,6 +804,21 @@ def _run_execution_turns(
                 last_test_section = section
                 log.info("executor turn %d: test exit=%s",
                          turn_idx + 1, test_result.get("exit_code"))
+                # Surface the run as a chat message so:
+                #   (a) the verifier can see what was actually tested without
+                #       digging through hidden harness state,
+                #   (b) the executor's later Q&A replies (which read recent
+                #       chat as context) honestly reference the run instead
+                #       of saying "I didn't run any tests".
+                exit_code = test_result.get("exit_code", 0)
+                verdict = "PASS" if exit_code == 0 else f"FAIL (exit {exit_code})"
+                output_tail = (test_result.get("output", "") or "")[-1500:]
+                chat(
+                    session_id,
+                    "executor",
+                    f"🧪 Auto-ran tests — **{verdict}**\n\n"
+                    f"```\n$ {test_result.get('cmd', '')}\n{output_tail}\n```",
+                )
 
         time.sleep(1.0)  # Let the human see each turn's output
 
