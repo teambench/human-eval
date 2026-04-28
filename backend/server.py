@@ -1112,6 +1112,78 @@ async def delete_file(session_id: str, path: str):
     return {"status": "ok", "path": rel}
 
 
+def _detect_workspace_test_command(container) -> tuple[str, str]:
+    """Pick the language-appropriate quick test command for the workspace.
+
+    Used by the hybrid agent_runner to give the AI executor the same
+    "run pytest, see failures, iterate" loop a human in team/solo mode has
+    via the terminal. Mirrors the language detection in
+    `_run_grade_diagnostics` but returns ONE focused command instead of a
+    full diagnostic suite.
+
+    Returns (language, command). language="unknown" when nothing matches —
+    callers should treat that as "no tests to run, skip".
+    """
+    try:
+        ls = container.exec_run(["ls", "/workspace"], workdir="/workspace")
+        files = (ls.output.decode("utf-8", errors="replace") or "").split()
+    except Exception:
+        files = []
+
+    if "go.mod" in files:
+        return "go", "go test -timeout 30s ./... 2>&1 | tail -c 4000"
+    if "package.json" in files:
+        return "node", "(npm test --silent 2>&1 || npx jest --no-coverage 2>&1) | tail -c 4000"
+    if any(m in files for m in ("pyproject.toml", "setup.py", "pytest.ini", "conftest.py")):
+        return "python", "python -m pytest -x --tb=short 2>&1 | tail -c 4000"
+    return "unknown", ""
+
+
+@app.post("/api/session/{session_id}/run-tests")
+async def run_tests(session_id: str):
+    """Per-turn test runner for the hybrid AI executor.
+
+    Runs ONE language-appropriate quick test command in the session's
+    container with a 60-second cap, returning stdout+stderr (last ~4000
+    chars). The agent calls this between turns so it can see test
+    failures and iterate — closing the asymmetry where team/solo
+    participants can run pytest in the terminal and the AI executor
+    historically could not. Read-mostly: only mutates /tmp inside the
+    container (test framework caches), never the workspace.
+    """
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    try:
+        container = docker_client.containers.get(session["container_id"])
+    except docker.errors.NotFound:
+        raise HTTPException(404, "Container not found")
+
+    language, cmd = _detect_workspace_test_command(container)
+    if language == "unknown":
+        return {"status": "skipped", "language": "unknown",
+                "cmd": "", "exit_code": -1, "output": ""}
+
+    try:
+        # `timeout 60` so a runaway test never blocks the agent's polling
+        # loop forever; matches the cap in _run_grade_diagnostics.
+        r = container.exec_run(
+            ["bash", "-c", f"timeout 60 bash -c {json.dumps(cmd)}"],
+            workdir="/workspace",
+            environment={"PYTHONPATH": "/workspace"},
+        )
+        return {
+            "status": "ran",
+            "language": language,
+            "cmd": cmd,
+            "exit_code": r.exit_code,
+            "output": r.output.decode("utf-8", errors="replace"),
+        }
+    except Exception as e:
+        return {"status": "error", "language": language, "cmd": cmd,
+                "exit_code": -1, "output": f"<exec failed: {type(e).__name__}: {e}>"}
+
+
 @app.post("/api/session/{session_id}/grade")
 async def grade_session(session_id: str):
     """

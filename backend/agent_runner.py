@@ -621,6 +621,49 @@ def _latest_msg_from(session_id: str, role: str) -> str:
     return ""
 
 
+def _run_session_tests(session_id: str) -> dict | None:
+    """Hit backend /run-tests; return {language, cmd, exit_code, output} or None.
+
+    Closes the asymmetry where team/solo participants can run `pytest -x`
+    in their terminal between attempts. The hybrid AI executor calls this
+    after each turn's file edits so the next turn's prompt can include
+    the actual test failure output and the agent can iterate the same
+    way a human would. Quiet on failure — never raises into the turn
+    loop, which would otherwise abort the whole execution cycle.
+    """
+    import httpx
+    backend_host = os.environ.get("HYBRID_BACKEND_URL", "http://localhost:8444")
+    try:
+        with httpx.Client(timeout=90.0) as c:
+            r = c.post(f"{backend_host}/api/session/{session_id}/run-tests")
+            if r.status_code != 200:
+                return None
+            return r.json()
+    except Exception as e:
+        log.warning("run-tests call failed: %s", e)
+        return None
+
+
+def _format_test_result_for_prompt(test_result: dict) -> str | None:
+    """Render a /run-tests payload as a short prompt-section string, or None."""
+    if not test_result:
+        return None
+    status = test_result.get("status")
+    if status in ("skipped", "error"):
+        return None
+    cmd = test_result.get("cmd", "")
+    exit_code = test_result.get("exit_code", 0)
+    output = (test_result.get("output", "") or "")[:3500]
+    if not output.strip():
+        return None
+    verdict = "PASS" if exit_code == 0 else f"FAIL (exit {exit_code})"
+    return (
+        f"Tests after your previous turn — {verdict}:\n"
+        f"$ {cmd}\n"
+        f"{output}"
+    )
+
+
 def _run_execution_turns(
     session_id: str,
     task_id: str,
@@ -631,10 +674,12 @@ def _run_execution_turns(
     """Multi-turn inner loop — executor iterates until DONE or turn cap.
 
     Each turn sees the current workspace (including its own prior edits)
-    plus the history of its previous turn summaries, so later turns can
-    correct / extend earlier work.
+    plus the history of its previous turn summaries AND the most recent
+    test-run output, so later turns can react to specific test failures
+    just like a human running `pytest -x` between attempts.
     """
     prior_turns: list[str] = []
+    last_test_section: str | None = None  # set after each turn that wrote files
     planner_msg = _latest_msg_from(session_id, "planner")
 
     for turn_idx in range(MAX_TURNS_PER_PHASE):
@@ -662,10 +707,16 @@ def _run_execution_turns(
                 "Your previous turns this session (most recent last):\n"
                 + "\n---\n".join(prior_turns)
             )
+        if last_test_section:
+            # Right BEFORE the workspace snapshot so the agent reads test
+            # failures while the relevant file contents are still fresh in
+            # its context window.
+            prompt_parts.append(last_test_section)
         prompt_parts.append(f"Current workspace snapshot:\n{ws_dump}")
         prompt_parts.append(
             f"Turn {turn_idx + 1} of {MAX_TURNS_PER_PHASE}. Produce file edits "
-            "OR emit `### DONE` if the task is complete."
+            "OR emit `### DONE` if the task is complete. If tests above are "
+            "failing, address those failures specifically."
         )
 
         messages = [
@@ -728,6 +779,20 @@ def _run_execution_turns(
             # burning tokens.
             log.info("executor: no edits two turns in a row, exiting loop")
             return
+
+        # Run the language-appropriate test command in the container so the
+        # next turn sees real failure output and can iterate. Skip on the
+        # last turn (no next turn would consume it) and skip if no edits
+        # were applied (test result would be unchanged from last turn).
+        if applied and turn_idx < MAX_TURNS_PER_PHASE - 1:
+            log.info("executor turn %d: running tests for next-turn context",
+                     turn_idx + 1)
+            test_result = _run_session_tests(session_id)
+            section = _format_test_result_for_prompt(test_result) if test_result else None
+            if section:
+                last_test_section = section
+                log.info("executor turn %d: test exit=%s",
+                         turn_idx + 1, test_result.get("exit_code"))
 
         time.sleep(1.0)  # Let the human see each turn's output
 
