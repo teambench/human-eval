@@ -89,7 +89,19 @@ export function PlannerView({ session, files, messages, onSendMessage, onPhaseCh
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <Timer startTime={session.startTime} timeLimit={session.taskConfig.timeLimit} />
+          <Timer
+            startTime={session.startTime}
+            timeLimit={session.taskConfig.timeLimit}
+            onTimeUp={() => {
+              // Time-box ran out. Force the session into the completed
+              // phase so every role lands on the survey. setPhase is a
+              // Firebase update — idempotent if multiple roles fire it.
+              if (session.phase !== 'completed') {
+                onLog('time_up', { phase: session.phase });
+                onPhaseChange('completed');
+              }
+            }}
+          />
           <span style={{
             background: '#313244', color: '#cdd6f4', padding: '4px 10px',
             borderRadius: 4, fontSize: 12, fontWeight: 600,

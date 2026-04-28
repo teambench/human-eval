@@ -491,6 +491,13 @@ def _check_and_reply(
     ]
     if verifier_msgs:
         state["last_seen_ts"] = max(m.get("timestamp", 0) for m in verifier_msgs)
+        # Any verifier chat — even if not addressed to THIS role — proves the
+        # human is still engaged. Reset the dead-man clock so the planner
+        # doesn't quietly exit after 5 min of "the verifier was busy talking
+        # to the executor". Previously last_activity only updated when an
+        # addressed question was processed, which made the planner unreachable
+        # after a typical execution-phase conversation.
+        state["last_activity"] = time.time()
 
     new_qs = [m for m in verifier_msgs if _addressed(m)]
     if not new_qs:
@@ -757,11 +764,28 @@ def _auto_grade(session_id: str, task_id: str | None = None) -> None:
         backend_host = _os.environ.get("HYBRID_BACKEND_URL", "http://localhost:8444")
         with httpx.Client(timeout=180.0) as c:
             r = c.post(f"{backend_host}/api/session/{session_id}/grade")
+            # 404 here means the backend's in-memory sessions[] dict doesn't
+            # know about us — usually a transient race when the session was
+            # just created and the persist file hasn't fsynced, OR the human
+            # already left and the cleanup raced our grade call. Sleep + retry
+            # once before giving up; on second 404 surface a structured error
+            # rather than dumping the raw FastAPI body, which used to render
+            # as `{"detail":"Session not found"}` in the Verifier's grader pane.
+            if r.status_code == 404:
+                time.sleep(2.0)
+                r = c.post(f"{backend_host}/api/session/{session_id}/grade")
             if r.status_code != 200:
+                friendly = (
+                    "Grader could not reach the workspace. The session may have "
+                    "ended or the backend was restarted."
+                ) if r.status_code == 404 else (
+                    f"Grader request failed with HTTP {r.status_code}."
+                )
                 _write_last_grade({
                     "ok": False,
+                    "error": "session_unavailable" if r.status_code == 404 else "grader_http_error",
                     "status": r.status_code,
-                    "output": r.text[:4000],
+                    "output": friendly,
                     "timestamp": int(time.time() * 1000),
                 })
                 return

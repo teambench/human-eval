@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { FileEntry } from '../types';
 
 interface FileTreeProps {
@@ -8,6 +9,14 @@ interface FileTreeProps {
   // (e.g. the AI Executor edited them in hybrid mode). Rendered with a
   // bright name + amber dot so the Verifier can scan changes at a glance.
   modifiedPaths?: Set<string>;
+  // When provided, render a "+ New file" affordance + per-row delete
+  // buttons. Only writer roles (executor in team/hybrid, oracle in solo)
+  // pass these — read-only roles (planner, verifier) leave them undefined
+  // so the affordances don't appear at all.
+  // onCreate returns the canonical path on success or null on rejection
+  // (validation/protected zone) so we can also auto-select the new file.
+  onCreate?: (path: string) => Promise<string | null>;
+  onDelete?: (path: string) => Promise<boolean>;
 }
 
 const EXT_ICONS: Record<string, string> = {
@@ -20,12 +29,96 @@ const EXT_ICONS: Record<string, string> = {
   sh: 'SH',
 };
 
-export function FileTree({ files, selectedPath, onSelect, modifiedPaths }: FileTreeProps) {
+export function FileTree({ files, selectedPath, onSelect, modifiedPaths, onCreate, onDelete }: FileTreeProps) {
+  const [creating, setCreating] = useState(false);
+  const [draftPath, setDraftPath] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submitCreate = async () => {
+    if (!onCreate || busy) return;
+    const trimmed = draftPath.trim();
+    if (!trimmed) { setCreating(false); return; }
+    setBusy(true);
+    const result = await onCreate(trimmed);
+    setBusy(false);
+    if (result) {
+      // Auto-select the new file so Monaco focuses it.
+      onSelect(result);
+      setDraftPath('');
+      setCreating(false);
+    }
+    // On failure (alert was shown by onCreate), keep the inline input open
+    // so the participant can correct the path without retyping.
+  };
+
   return (
     <div style={{ background: '#181825', height: '100%', overflowY: 'auto', padding: '8px 0' }}>
-      <div style={{ padding: '4px 12px', fontSize: 11, color: '#888', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1 }}>
-        Files
+      <div style={{
+        padding: '4px 12px', fontSize: 11, color: '#888', fontWeight: 600,
+        textTransform: 'uppercase', letterSpacing: 1,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      }}>
+        <span>Files</span>
+        {onCreate && (
+          <button
+            onClick={() => { setCreating(true); setDraftPath(''); }}
+            title="Create a new file in the workspace"
+            style={{
+              background: 'transparent', color: '#a6adc8',
+              border: '1px solid #45475a', borderRadius: 3,
+              padding: '0 6px', fontSize: 11, cursor: 'pointer',
+              lineHeight: '16px', fontWeight: 600,
+            }}
+          >
+            + New file
+          </button>
+        )}
       </div>
+      {creating && onCreate && (
+        <div style={{ padding: '4px 12px', display: 'flex', gap: 4, alignItems: 'center' }}>
+          <input
+            autoFocus
+            value={draftPath}
+            disabled={busy}
+            placeholder="e.g. tests/test_mathutils.py"
+            onChange={e => setDraftPath(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') submitCreate();
+              else if (e.key === 'Escape') { setCreating(false); setDraftPath(''); }
+            }}
+            style={{
+              flex: 1, background: '#313244', color: '#cdd6f4',
+              border: '1px solid #45475a', borderRadius: 3,
+              padding: '3px 6px', fontSize: 12, outline: 'none',
+              fontFamily: 'ui-monospace, monospace',
+            }}
+          />
+          <button
+            onClick={submitCreate}
+            disabled={busy || !draftPath.trim()}
+            title="Create file"
+            style={{
+              background: '#89b4fa', color: '#1e1e2e', border: 'none',
+              borderRadius: 3, padding: '3px 8px', fontSize: 11,
+              cursor: (busy || !draftPath.trim()) ? 'not-allowed' : 'pointer',
+              fontWeight: 700,
+            }}
+          >
+            {busy ? '…' : 'Add'}
+          </button>
+          <button
+            onClick={() => { setCreating(false); setDraftPath(''); }}
+            title="Cancel"
+            style={{
+              background: 'transparent', color: '#888',
+              border: '1px solid #45475a', borderRadius: 3,
+              padding: '3px 6px', fontSize: 11, cursor: 'pointer',
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
       {files.map(f => {
         const ext = f.path.split('.').pop() ?? '';
         const isSelected = f.path === selectedPath;
@@ -69,6 +162,25 @@ export function FileTree({ files, selectedPath, onSelect, modifiedPaths }: FileT
             )}
             {f.readOnly && (
               <span style={{ fontSize: 9, color: '#f38ba8', opacity: 0.7 }}>RO</span>
+            )}
+            {onDelete && !f.readOnly && (
+              <button
+                onClick={async (e) => {
+                  // Don't let the row's onClick fire; we'd open the file
+                  // we're about to delete.
+                  e.stopPropagation();
+                  if (!window.confirm(`Delete ${f.path}? This can't be undone.`)) return;
+                  await onDelete(f.path);
+                }}
+                title={`Delete ${f.path}`}
+                style={{
+                  background: 'transparent', color: '#6c7086',
+                  border: 'none', cursor: 'pointer', fontSize: 12,
+                  padding: '0 4px', lineHeight: 1,
+                }}
+              >
+                ×
+              </button>
             )}
           </div>
         );

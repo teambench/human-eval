@@ -925,6 +925,155 @@ async def write_file(session_id: str, body: WriteFileRequest):
             "stripped_bytes": len(body.content) - len(clean)}
 
 
+# Paths the participant is never allowed to create OR delete from the file
+# tree. These are either grading inputs (brief/spec/expected) or task-fixture
+# files whose mutation would make the task ungradable. Mirrors the read-only
+# logic in /files but is enforced at the create/delete boundary too.
+_PROTECTED_NAMES = frozenset({
+    "brief.md", "spec.md", "README.md", "README_HUMAN.md",
+    "conftest.py", "analysis_guidance.md",
+})
+
+# Per-task lambdas duplicated from list_files() RO_OVERRIDES so that creating
+# a file inside a frozen subtree (e.g. CROSS1's service/) is also rejected.
+# Keep these in sync if list_files's RO_OVERRIDES grows.
+_RO_OVERRIDES = {
+    "CROSS1_api_contract": lambda p: p.startswith("service/") or p == "service/go.mod",
+    "CROSS2_schema_evolution": lambda p: p.startswith("service_a/"),
+    "CRYPTO1_nonce_reuse": lambda p: p == "crypto_service/utils.py",
+    "GO1_concurrency_fix": lambda p: p.endswith("_test.go"),
+}
+
+# Mirror of list_files() WRITABLE_OVERRIDES. Tasks whose spec asks the
+# participant to create or write a file inside an otherwise-protected zone
+# (e.g. tests/) must opt that exact path back in here. Without this, the
+# default "tests/ is protected" rule would block create-file for the very
+# deliverable the spec asks for.
+_WRITABLE_OVERRIDES = {
+    "TEST3_integration": {"tests/test_integration.py"},
+}
+
+
+def _is_protected_path(task_id: str, rel: str) -> bool:
+    """True iff the participant must not create/delete this path.
+
+    Always-protected: brief/spec/expected, conftest, analysis_guidance, the
+    `tests/` tree (tests are read-only by default; per-task whitelisted ones
+    aren't deleted by participants either), and `_test.go` test files.
+    Plus per-task RO_OVERRIDES. Per-task WRITABLE_OVERRIDES whitelist
+    specific paths back out of the default protection.
+    """
+    # Whitelist comes first — a path the spec explicitly asks for is always
+    # creatable/deletable, even if it sits under a default-protected dir.
+    allow = _WRITABLE_OVERRIDES.get(task_id, set())
+    if rel in allow:
+        return False
+    if rel in _PROTECTED_NAMES:
+        return True
+    if rel.startswith("tests/"):
+        return True
+    if rel.endswith("_test.go"):
+        return True
+    fn = _RO_OVERRIDES.get(task_id)
+    if fn and fn(rel):
+        return True
+    return False
+
+
+class FilePathRequest(BaseModel):
+    path: str
+
+
+@app.post("/api/session/{session_id}/create-file")
+async def create_file(session_id: str, body: FilePathRequest):
+    """Create an empty file in the session workspace.
+
+    Used by the FileTree's "+ New file" affordance so participants can add
+    deliverables the spec asks for (e.g. test_*.py for the Unit Test Basics
+    task) without dropping into the terminal. Rejects:
+      - paths that escape /workspace,
+      - paths whose name collides with grader inputs (_PROTECTED_NAMES),
+      - paths that already exist (we'd otherwise silently truncate).
+    """
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    rel = body.path.lstrip("/").strip()
+    if not rel or rel.startswith(".."):
+        raise HTTPException(400, "Invalid path")
+    # Disallow path traversal via os.path.normpath to catch e.g. `a/../../b`.
+    if os.path.normpath(rel) != rel.replace("./", ""):
+        # Conservative: any normalized form that differs is suspicious.
+        normalized = os.path.normpath(rel)
+        if normalized.startswith("..") or os.path.isabs(normalized):
+            raise HTTPException(400, "Invalid path")
+        rel = normalized
+
+    task_id = session.get("task_id", "")
+    if _is_protected_path(task_id, rel):
+        raise HTTPException(403, f"Path is protected: {rel}")
+
+    ws_path = session.get("ws_path") or os.path.join(session["workspace_dir"], "workspace")
+    full = os.path.join(ws_path, rel)
+    real = os.path.realpath(full)
+    if not real.startswith(os.path.realpath(ws_path)):
+        raise HTTPException(400, "Invalid path")
+    if os.path.exists(full):
+        raise HTTPException(409, "File already exists")
+
+    parent = os.path.dirname(full)
+    os.makedirs(parent, exist_ok=True)
+    # Empty file — Monaco loads it as a blank buffer the participant types into.
+    with open(full, "w") as f:
+        f.write("")
+    try:
+        os.chmod(full, 0o666)
+        os.chmod(parent, 0o777)
+    except OSError:
+        pass
+
+    return {"status": "ok", "path": rel}
+
+
+@app.delete("/api/session/{session_id}/delete-file")
+async def delete_file(session_id: str, path: str):
+    """Delete a file from the session workspace.
+
+    Rejects the same protected paths as create-file. Path comes via query
+    parameter to keep the DELETE body-less (Fetch's body+DELETE has spotty
+    proxy support and we already have a Cloudflare tunnel in front).
+    """
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    rel = (path or "").lstrip("/").strip()
+    if not rel or ".." in rel.split("/"):
+        raise HTTPException(400, "Invalid path")
+
+    task_id = session.get("task_id", "")
+    if _is_protected_path(task_id, rel):
+        raise HTTPException(403, f"Path is protected: {rel}")
+
+    ws_path = session.get("ws_path") or os.path.join(session["workspace_dir"], "workspace")
+    full = os.path.join(ws_path, rel)
+    real = os.path.realpath(full)
+    if not real.startswith(os.path.realpath(ws_path)):
+        raise HTTPException(400, "Invalid path")
+    if not os.path.isfile(full):
+        # Idempotent — return ok if the file is already gone (e.g. because
+        # the user double-clicked). Avoids confusing "File not found" toasts.
+        return {"status": "ok", "path": rel, "already_gone": True}
+
+    try:
+        os.remove(full)
+    except OSError as e:
+        raise HTTPException(500, f"Delete failed: {e}")
+
+    return {"status": "ok", "path": rel}
+
+
 @app.post("/api/session/{session_id}/grade")
 async def grade_session(session_id: str):
     """

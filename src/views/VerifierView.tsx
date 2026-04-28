@@ -317,7 +317,16 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <Timer startTime={session.startTime} timeLimit={session.taskConfig.timeLimit} />
+          <Timer
+            startTime={session.startTime}
+            timeLimit={session.taskConfig.timeLimit}
+            onTimeUp={() => {
+              if (session.phase !== 'completed') {
+                onLog('time_up', { phase: session.phase });
+                onPhaseChange('completed');
+              }
+            }}
+          />
           <span style={{
             background: '#313244', color: '#cdd6f4', padding: '4px 10px',
             borderRadius: 4, fontSize: 12, fontWeight: 600,

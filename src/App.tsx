@@ -17,7 +17,7 @@ export default function App() {
     messages, files, participants,
     startTime, endTime,
     joining, waitingForTeam, saveStatus,
-    join, sendMessage, updateFile, setPhase, exportLogs, leaveSession, addLog,
+    join, sendMessage, updateFile, createFile, deleteFile, setPhase, exportLogs, leaveSession, addLog,
   } = useFirebaseSession();
 
   // Confirmation wrapper: guards against accidental clicks on Back.
@@ -204,6 +204,8 @@ export default function App() {
         session={session}
         files={files}
         onUpdateFile={(path, content) => updateFile(path, content)}
+        onCreateFile={createFile}
+        onDeleteFile={deleteFile}
         onPhaseChange={setPhase}
         onLog={addLog}
         onLeave={confirmLeave}
@@ -225,6 +227,7 @@ export default function App() {
       return wrap(
         <>{regionBadge}<ExecutorView session={session} files={files} messages={messages}
           onSendMessage={onSend} onUpdateFile={(p, c) => updateFile(p, c)}
+          onCreateFile={createFile} onDeleteFile={deleteFile}
           onPhaseChange={setPhase} onLog={addLog} onLeave={confirmLeave}
           saveStatus={saveStatus} /></>
       );

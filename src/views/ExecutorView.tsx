@@ -16,13 +16,15 @@ interface ExecutorViewProps {
   messages: ReturnType<typeof Array<any>>;
   onSendMessage: (to: Role | 'all', content: string) => void;
   onUpdateFile: (path: string, content: string) => void;
+  onCreateFile: (path: string) => Promise<string | null>;
+  onDeleteFile: (path: string) => Promise<boolean>;
   onPhaseChange: (phase: SessionState['phase']) => void;
   onLog: (action: string, detail?: Record<string, unknown>) => void;
   onLeave: () => void;
   saveStatus?: 'idle' | 'saving' | 'saved' | 'error';
 }
 
-export function ExecutorView({ session, files, messages, onSendMessage, onUpdateFile, onPhaseChange, onLog, onLeave, saveStatus }: ExecutorViewProps) {
+export function ExecutorView({ session, files, messages, onSendMessage, onUpdateFile, onCreateFile, onDeleteFile, onPhaseChange, onLog, onLeave, saveStatus }: ExecutorViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(files.find(f => !f.readOnly)?.path ?? null);
   // Auto-pick the first editable file once files arrive. In team mode files
   // are fetched AFTER the component mounts (waiting for Executor's container
@@ -106,7 +108,16 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <Timer startTime={session.startTime} timeLimit={session.taskConfig.timeLimit} />
+          <Timer
+            startTime={session.startTime}
+            timeLimit={session.taskConfig.timeLimit}
+            onTimeUp={() => {
+              if (session.phase !== 'completed') {
+                onLog('time_up', { phase: session.phase });
+                onPhaseChange('completed');
+              }
+            }}
+          />
           <span style={{
             background: '#313244', color: '#cdd6f4', padding: '4px 10px',
             borderRadius: 4, fontSize: 12, fontWeight: 600,
@@ -148,7 +159,18 @@ export function ExecutorView({ session, files, messages, onSendMessage, onUpdate
             </div>
           )}
           <div style={{ flex: 1, minHeight: 0 }}>
-            <FileTree files={files} selectedPath={selectedFile} modifiedPaths={modifiedPaths} onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }} />
+            <FileTree
+              files={files}
+              selectedPath={selectedFile}
+              modifiedPaths={modifiedPaths}
+              onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }}
+              // Create/delete only available while the editor is unlocked.
+              // Read-only phases (planning, verification) hide the affordances
+              // entirely so the participant can't make spurious workspace
+              // changes that would bleed into the verifier's diff view.
+              onCreate={canEdit ? onCreateFile : undefined}
+              onDelete={canEdit ? onDeleteFile : undefined}
+            />
           </div>
         </div>
 

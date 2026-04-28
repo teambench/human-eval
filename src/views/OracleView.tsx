@@ -16,6 +16,8 @@ interface OracleViewProps {
   session: SessionState;
   files: FileEntry[];
   onUpdateFile: (path: string, content: string) => void;
+  onCreateFile: (path: string) => Promise<string | null>;
+  onDeleteFile: (path: string) => Promise<boolean>;
   onPhaseChange: (phase: SessionState['phase']) => void;
   onLog: (action: string, detail?: Record<string, unknown>) => void;
   onLeave: () => void;
@@ -60,7 +62,7 @@ function stripTeamNarrative(md: string): string {
   return out;
 }
 
-export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog, onLeave, saveStatus }: OracleViewProps) {
+export function OracleView({ session, files, onUpdateFile, onCreateFile, onDeleteFile, onPhaseChange, onLog, onLeave, saveStatus }: OracleViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(files.find(f => !f.readOnly)?.path ?? null);
   // See ExecutorView: files load after mount, so the initializer often runs
   // on an empty list. This backstop picks an editable file once they arrive.
@@ -241,7 +243,20 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
               })}
             </div>
           )}
-          <Timer startTime={session.startTime} timeLimit={session.taskConfig.timeLimit} />
+          <Timer
+            startTime={session.startTime}
+            timeLimit={session.taskConfig.timeLimit}
+            onTimeUp={() => {
+              // Time-box ran out. Force the session into the completed
+              // phase so the participant lands on the survey, regardless
+              // of whether they ever clicked "Submit & Grade" or "Finish".
+              if (!finished && session.phase !== 'completed') {
+                onLog('time_up', { phase: session.phase });
+                setFinished(true);
+                onPhaseChange('completed');
+              }
+            }}
+          />
           <span style={{
             background: '#313244', color: '#cdd6f4', padding: '4px 10px',
             borderRadius: 4, fontSize: 12, fontWeight: 600,
@@ -404,6 +419,8 @@ export function OracleView({ session, files, onUpdateFile, onPhaseChange, onLog,
                 })}
                 selectedPath={selectedFile}
                 onSelect={p => { setSelectedFile(p); onLog('file_open', { path: p }); }}
+                onCreate={isActive ? onCreateFile : undefined}
+                onDelete={isActive ? onDeleteFile : undefined}
               />
             </div>
           </div>

@@ -833,6 +833,133 @@ export function useFirebaseSession() {
     }
   }, [sessionId, role, task, mode, pid]);
 
+  // Create an empty file in the workspace. Used by the FileTree "+ New file"
+  // button when the participant needs to add a deliverable the spec asks for
+  // (e.g. tests/test_mathutils.py for the Unit Test Basics task) without
+  // dropping into the terminal.
+  //
+  // The flow is:
+  //   1. Backend creates the empty file in the container volume — also
+  //      validates path safety and per-task protected-zone rules. We always
+  //      go through the backend FIRST so a server-side rejection (403/409)
+  //      is surfaced before we touch local state or Firebase.
+  //   2. Optimistically add to local React state so Monaco can switch to it.
+  //   3. Mirror to Firebase /files so other roles' file trees pick it up
+  //      via the existing onValue subscription, AND so the Verifier's
+  //      diff baseline treats it as "+ new file".
+  // Returns the canonicalized path on success, or null on failure (caller
+  // can surface a toast).
+  const createFile = useCallback(async (path: string): Promise<string | null> => {
+    if (!sessionId || !role) return null;
+    const trimmed = path.trim().replace(/^\/+/, '');
+    if (!trimmed) return null;
+
+    // Backend first — rejection here means we don't pollute state.
+    let ok = false; let canonical = trimmed; let errMsg = '';
+    try {
+      const r = await fetch(`${BACKEND_API()}/api/session/${sessionId}/create-file`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: trimmed }),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        ok = true;
+        canonical = (j && typeof j.path === 'string') ? j.path : trimmed;
+      } else {
+        try {
+          const j = await r.json();
+          errMsg = (j && typeof j.detail === 'string') ? j.detail : `HTTP ${r.status}`;
+        } catch { errMsg = `HTTP ${r.status}`; }
+      }
+    } catch (e) {
+      errMsg = (e instanceof Error) ? e.message : 'network error';
+    }
+    if (!ok) {
+      // Surface the rejection to the user via a window.alert — keeps the
+      // failure mode visible without dragging a toast library into the bundle.
+      try { window.alert(`Could not create "${trimmed}": ${errMsg}`); } catch { /* ignore */ }
+      return null;
+    }
+
+    // Optimistically add locally so the editor can switch to it without
+    // waiting for the Firebase echo.
+    const language = (() => {
+      const ext = canonical.split('.').pop() ?? '';
+      return ({
+        py: 'python', js: 'javascript', ts: 'typescript', tsx: 'typescript',
+        go: 'go', sh: 'shell', md: 'markdown', yaml: 'yaml', yml: 'yaml',
+        json: 'json', txt: 'plaintext', sql: 'sql',
+      } as Record<string, string>)[ext] || 'plaintext';
+    })();
+    setFiles(prev => {
+      if (prev.some(f => f.path === canonical)) return prev;
+      return [...prev, { path: canonical, content: '', language, readOnly: false }];
+    });
+
+    // Firebase mirror so other roles see the new file immediately.
+    const key = canonical.replace(/[.\/\[\]#$]/g, '_');
+    try {
+      await set(ref(db, `teambench/sessions/${sessionId}/files/${key}`), {
+        path: canonical, content: '', language, readOnly: false,
+      });
+    } catch { /* best-effort */ }
+    if (task && pid) {
+      await safeWrite('shared-file-create', () =>
+        set(ref(db, `${sharedFilesPath(task.taskId, mode, sessionId)}/${key}`), {
+          path: canonical, content: '', language, readOnly: false,
+        }));
+      await pushInteraction(task.taskId, mode, sessionId, pid, 'file_create', { path: canonical });
+    }
+    addLog(sessionId, role, 'file_create', { path: canonical });
+    return canonical;
+  }, [sessionId, role, task, mode, pid]);
+
+  // Delete a file from the workspace. Same shape as createFile — backend
+  // first (path-safety + protected-zone enforcement), then local state,
+  // then Firebase mirror.
+  const deleteFile = useCallback(async (path: string): Promise<boolean> => {
+    if (!sessionId || !role) return false;
+    const trimmed = path.trim();
+    if (!trimmed) return false;
+
+    let ok = false; let errMsg = '';
+    try {
+      const url = `${BACKEND_API()}/api/session/${sessionId}/delete-file?path=${encodeURIComponent(trimmed)}`;
+      const r = await fetch(url, { method: 'DELETE' });
+      if (r.ok) {
+        ok = true;
+      } else {
+        try {
+          const j = await r.json();
+          errMsg = (j && typeof j.detail === 'string') ? j.detail : `HTTP ${r.status}`;
+        } catch { errMsg = `HTTP ${r.status}`; }
+      }
+    } catch (e) {
+      errMsg = (e instanceof Error) ? e.message : 'network error';
+    }
+    if (!ok) {
+      try { window.alert(`Could not delete "${trimmed}": ${errMsg}`); } catch { /* ignore */ }
+      return false;
+    }
+
+    // Drop from local state.
+    setFiles(prev => prev.filter(f => f.path !== trimmed));
+
+    // Firebase: remove the key by writing null.
+    const key = trimmed.replace(/[.\/\[\]#$]/g, '_');
+    try {
+      await set(ref(db, `teambench/sessions/${sessionId}/files/${key}`), null);
+    } catch { /* best-effort */ }
+    if (task && pid) {
+      await safeWrite('shared-file-delete', () =>
+        set(ref(db, `${sharedFilesPath(task.taskId, mode, sessionId)}/${key}`), null));
+      await pushInteraction(task.taskId, mode, sessionId, pid, 'file_delete', { path: trimmed });
+    }
+    addLog(sessionId, role, 'file_delete', { path: trimmed });
+    return true;
+  }, [sessionId, role, task, mode, pid]);
+
   // Snapshot the container workspace into Firebase so post-hoc analysis
   // can read terminal-authored artifacts (results.json, report.md, budget
   // reports, etc.). Monaco-edited files are already in /files; this captures
@@ -1034,7 +1161,7 @@ export function useFirebaseSession() {
     messages: getVisibleMessages(), files: getVisibleFiles(),
     participants, startTime, endTime, joining, waitingForTeam,
     saveStatus,
-    join, sendMessage, updateFile, setPhase, exportLogs, leaveSession,
+    join, sendMessage, updateFile, createFile, deleteFile, setPhase, exportLogs, leaveSession,
     addLog: (action: string, detail?: Record<string, unknown>) => {
       if (sessionId && role) addLog(sessionId, role, action, detail ?? {});
       // v2 mirror — every legacy addLog also lands in interactions
