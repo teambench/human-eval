@@ -233,7 +233,7 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
   const needsVerdictAttention = canVerify && viewedWorkspace && !verdict;
   const needsSubmitAttention = canVerify && !!verdict;
 
-  const handleSubmitVerdict = () => {
+  const handleSubmitVerdict = (endSession: boolean = false) => {
     if (!verdict) return;
     // Capture the grader state the verifier was looking at AT decision time.
     // lastGrade is overwritten on each grade run, so we snapshot it into the
@@ -247,6 +247,10 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
       autoGraderVerdict,
       autoGraderScore,
       override,
+      // FAIL has two terminal paths: send back for remediation (endSession=false)
+      // or end the session as a final FAIL (endSession=true). PASS is always
+      // session-ending so the flag is irrelevant there.
+      endSession: verdict === 'fail' ? endSession : true,
       mode: session.mode,
       timestamp: Date.now(),
     };
@@ -278,10 +282,15 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
       }
     }
 
-    if (verdict === 'fail') {
-      // Send feedback to executor, go back to execution
+    if (verdict === 'fail' && !endSession) {
+      // Send feedback to executor, go back to execution for another attempt.
       onSendMessage('executor', `[VERIFICATION FAILED]\n\n${notes}`);
       onPhaseChange('execution');
+    } else if (verdict === 'fail' && endSession) {
+      // Verifier chose to terminate the session as a final FAIL. Still log the
+      // notes to the executor channel so the chat history shows why we ended.
+      onSendMessage('executor', `[SESSION ENDED — VERIFICATION FAILED]\n\n${notes}`);
+      onPhaseChange('completed');
     } else {
       onPhaseChange('completed');
     }
@@ -605,8 +614,9 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                     security regressions, code that happens to satisfy the existing tests but doesn't
                     actually solve the problem in the spec. Check the <strong style={{ color: '#a6adc8' }}>diff</strong>{' '}
                     and the <strong style={{ color: '#a6adc8' }}>grader output</strong>, then decide: PASS if the
-                    fix is genuinely correct; FAIL if it isn't (even if tests pass). On FAIL your notes go
-                    back to the AI Executor for another attempt.
+                    fix is genuinely correct; FAIL if it isn't (even if tests pass). On FAIL you can either send
+                    your notes back to the AI Executor for another attempt, or end the session now if you're out
+                    of time or the team is stuck.
                   </>
                 ) : (
                   <>
@@ -614,7 +624,8 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                     and the <strong style={{ color: '#a6adc8' }}>Auto-grader output</strong> for test results.
                     Pick <span style={{ color: '#10b981', fontWeight: 600 }}>PASS</span> if the fix is correct
                     and complete, <span style={{ color: '#f38ba8', fontWeight: 600 }}>FAIL</span> if something
-                    is missing or wrong. On FAIL, your notes are sent back to the Executor for another attempt.
+                    is missing or wrong. On FAIL you can either send your notes back to the Executor for another
+                    attempt, or end the session now if the team is stuck or out of time.
                   </>
                 )}
               </p>
@@ -658,19 +669,51 @@ export function VerifierView({ session, files, messages, onSendMessage, onPhaseC
                   resize: 'vertical', fontFamily: 'inherit',
                 }}
               />
-              <button
-                onClick={handleSubmitVerdict}
-                disabled={!verdict}
-                className={needsSubmitAttention ? 'tb-spotlight' : undefined}
-                style={{
-                  marginTop: 8, background: verdict ? '#10b981' : '#555', color: '#000',
-                  border: 'none', borderRadius: 6, padding: '10px 32px', cursor: verdict ? 'pointer' : 'not-allowed',
-                  fontWeight: 700, fontSize: 14,
-                  ['--tb-spot-rgb' as any]: '16, 185, 129',
-                }}
-              >
-                {verdict === 'fail' ? 'Send Back to Executor' : 'Submit & Complete'}
-              </button>
+              {verdict === 'fail' ? (
+                <div
+                  className={needsSubmitAttention ? 'tb-spotlight' : undefined}
+                  style={{
+                    display: 'flex', gap: 8, marginTop: 8, padding: 4,
+                    ['--tb-spot-rgb' as any]: '243, 139, 168',
+                  }}
+                >
+                  <button
+                    onClick={() => handleSubmitVerdict(false)}
+                    title="Send your notes to the Executor for another attempt at the task"
+                    style={{
+                      background: '#f38ba8', color: '#000', border: 'none', borderRadius: 6,
+                      padding: '10px 22px', cursor: 'pointer', fontWeight: 700, fontSize: 14,
+                    }}
+                  >
+                    Send Back to Executor
+                  </button>
+                  <button
+                    onClick={() => handleSubmitVerdict(true)}
+                    title="End the session now and record this as a final FAIL — use this if the team is stuck or out of time"
+                    style={{
+                      background: 'transparent', color: '#f38ba8',
+                      border: '2px solid #f38ba8', borderRadius: 6,
+                      padding: '8px 22px', cursor: 'pointer', fontWeight: 700, fontSize: 14,
+                    }}
+                  >
+                    End Session as FAIL
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => handleSubmitVerdict()}
+                  disabled={!verdict}
+                  className={needsSubmitAttention ? 'tb-spotlight' : undefined}
+                  style={{
+                    marginTop: 8, background: verdict ? '#10b981' : '#555', color: '#000',
+                    border: 'none', borderRadius: 6, padding: '10px 32px', cursor: verdict ? 'pointer' : 'not-allowed',
+                    fontWeight: 700, fontSize: 14,
+                    ['--tb-spot-rgb' as any]: '16, 185, 129',
+                  }}
+                >
+                  Submit &amp; Complete
+                </button>
+              )}
             </div>
           )}
         </div>

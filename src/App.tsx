@@ -39,6 +39,41 @@ export default function App() {
     return registerSessionCleanup(sessionId);
   }, [sessionId]);
 
+  // Back-navigation guard. Participants kept hitting the browser-back button
+  // (or the mouse-keypad back gesture) mid-session, which dropped them out of
+  // an in-flight session with no way to rejoin. Pin a sentinel history entry
+  // and ask before letting popstate / beforeunload tear down the session.
+  // Active only while a session is in-flight (joined a role, not lobby or
+  // completed); the lobby and survey/completed screens navigate freely.
+  const sessionActive = !!sessionId && !!role && phase !== 'lobby' && phase !== 'completed';
+  useEffect(() => {
+    if (!sessionActive) return;
+    const SENTINEL = { __teambench_session_pin: true };
+    history.pushState(SENTINEL, '');
+    const onPopState = () => {
+      const msg = mode === 'team'
+        ? 'Leave this task? Your teammates will see the session as cancelled and you will not be able to rejoin.'
+        : 'Leave this task? Your session will end and unsaved progress will be lost.';
+      if (window.confirm(msg)) {
+        leaveSession();
+        // Let the natural back navigation proceed; nothing else to do.
+      } else {
+        // Re-pin so the next back press triggers the same prompt.
+        history.pushState(SENTINEL, '');
+      }
+    };
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('popstate', onPopState);
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      window.removeEventListener('beforeunload', onBeforeUnload);
+    };
+  }, [sessionActive, mode, leaveSession]);
+
   // ── Stale-bundle detection ─────────────────────────────────────────────
   // Every fresh page-load writes its build hash to localStorage. Any tab
   // whose baked-in __BUILD_HASH__ is older than that stored hash is on a
